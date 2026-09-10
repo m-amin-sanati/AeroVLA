@@ -621,3 +621,30 @@ view options.
 ### Next steps
 - Let current run finish (`Completed: 64 / 82`); on next launch the chase cam is
   active. When the run completes, pull metrics + `scripts/metric.sh`.
+
+---
+
+## Session 2026-09-10 — Stopped eval / teardown (session cont.5)
+
+### Goal
+User asked to stop the eval process.
+
+### What I did
+- `kill $(cat /tmp/aerovla_split_30000.pid)` (= 1311614) — one-command teardown.
+- Verified: local server (1311646), tunnel (1311751), viewer, UE4 all gone;
+  no 300xx ports bound; split log shows `==> teardown complete.`
+- Confirmed H100 eval dead: pidfile `/tmp/aerovla_eval_30000.pid` removed,
+  process gone.
+
+### Problems / notes
+- H100 log tail shows the eval's final line is a multiprocessing shutdown
+  artifact (`AttributeError: 'NoneType' object has no attribute 'pack'` in
+  `send_bytes`) from being killed mid-send — expected on kill, not a real error.
+- Run ended at `Completed: 64 / 82` (resume work preserved in result dirs).
+
+### Next steps
+- Results dirs on H100: `eval_results/checkpoints/seen_valset/BrushifyCountryRoads`
+  — 64 completed episodes this run (plus prior partials). Pull metrics +
+  `scripts/metric.sh` when desired.
+- Next launch uses `SpringArmChase` view (commit `b59fc25`), and will resume
+  skipping already-evaluated episodes.
