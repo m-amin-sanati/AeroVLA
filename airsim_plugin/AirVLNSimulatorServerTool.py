@@ -263,6 +263,11 @@ env_exec_path_dict = {
         'bash_name': 'ModernCityMap',
         'exec_path': './closeloop_envs',
     },
+    "BrushifyCountryRoads": {
+        'bash_name': 'BrushifyCountryRoads',
+        'exec_path': 'BrushifyCountryRoads',
+        'engine_dir': 'engine',
+    },
     "Carla_Town01": {
         'bash_name': 'CarlaUE4',
         'exec_path': './carla_town_envs/Town01/LinuxNoEditor',
@@ -300,6 +305,28 @@ env_exec_path_dict = {
         'exec_path': './carla_town_envs/Town15/LinuxNoEditor',
     },
 }
+
+
+def resolve_env_launcher(scen_id):
+    """Resolve the UE4 launcher script path for a scene id.
+
+    Layout schema (per env):
+        envs/<Env>/data_raws/...   (raw episode archives - not used by server)
+        envs/<Env>/engine/<Env>/<Env>.sh   (extracted UE4, via 'engine_dir')
+
+    Classic upstream entries (closeloop_envs / carla_town_envs) keep their
+    original nested layout; the launcher script sits inside their exec_path.
+    """
+    env_info = env_exec_path_dict.get(scen_id)
+    if env_info is None:
+        return None
+    engine_dir = env_info.get('engine_dir')
+    if engine_dir:
+        launcher = env_info['bash_name'] + '.sh'
+        return os.path.join(args.root_path, env_info['exec_path'], engine_dir, env_info['bash_name'], launcher)
+    return os.path.join(args.root_path, env_info['exec_path'], env_info['bash_name'] + '.sh')
+
+
 def create_drones(drone_num_per_env=1, show_scene=False, uav_mode=True) -> dict:
     airsim_settings = copy.deepcopy(AIRSIM_SETTINGS_TEMPLATE)
     return airsim_settings
@@ -436,6 +463,22 @@ def KillAirVLN() -> None:
     return
 
 
+def make_env_launch_cmd(env_path, gpu_id, settings_path):
+    """Build the UE4 launch command line.
+
+    Directions:
+      --windowed ... -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter=<gpu> -settings=<path>
+      --windowed ... -windowed -ResX=1280 -ResY=720 -WinX=740 -WinY=610 -NoSound -NoVSync -GraphicsAdapter=<gpu> -settings=<path>
+    """
+    if args.windowed:
+        return "bash {} -windowed -ResX=1280 -ResY=720 -WinX=740 -WinY=610 -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+            env_path, gpu_id, settings_path
+        )
+    return "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+        env_path, gpu_id, settings_path
+    )
+
+
 class EventHandler(object):
     def __init__(self):
         scene_ports = []
@@ -494,16 +537,14 @@ class EventHandler(object):
                 continue
             
             if scen_id in env_exec_path_dict:
-                env_info = env_exec_path_dict.get(scen_id)
-                res = os.path.join(args.root_path, env_info['exec_path'], env_info['bash_name'] + '.sh')
+                res = resolve_env_launcher(scen_id)
                 choose_env_exe_paths.append(res)
             else:
                 prefix_flag = False
                 for map_name in env_exec_path_dict.keys():
                     if str(scen_id).startswith(map_name):
                         prefix_flag = True
-                        env_info = env_exec_path_dict.get(map_name)
-                        res = os.path.join(args.root_path, env_info['exec_path'], env_info['bash_name'] + '.sh')
+                        res = resolve_env_launcher(map_name)
                         choose_env_exe_paths.append(res)
                 if not prefix_flag:
                     print(f'can not find scene file: {scen_id}')
@@ -526,7 +567,7 @@ class EventHandler(object):
                 p_s.append(None)
                 continue
             else:
-                subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+                subprocess_execute = make_env_launch_cmd(
                    choose_env_exe_paths[index],
                    gpu_id,
                    str(CWD_DIR / 'settings' / str(ports[index]) / 'settings.json'),
@@ -571,9 +612,8 @@ class EventHandler(object):
         KillPorts([port])
         
         scene_id, gpu_id = self.port_to_scene[port]
-        env_info = env_exec_path_dict.get(scene_id)
-        env_path = os.path.join(args.root_path, env_info['exec_path'], env_info['bash_name'] + '.sh')
-        subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+        env_path = resolve_env_launcher(scene_id)
+        subprocess_execute = make_env_launch_cmd(
                     env_path,
                     gpu_id,
                     str(CWD_DIR / 'settings' / str(port) / 'settings.json'),
@@ -686,10 +726,16 @@ if __name__ == '__main__':
         default="../envs",
         help='root dir for env path'
     ) 
+    parser.add_argument(
+        "--windowed",
+        action="store_true",
+        default=False,
+        help='launch UE4 in a visible window (default: offscreen, no window)'
+    )
     args = parser.parse_args()
 
 
-    HOST = '127.0.0.1'
+    HOST = '0.0.0.0'
     PORT = int(args.port)
     CWD_DIR = Path(str(os.path.abspath(__file__))).parent.resolve()
     PROJECT_ROOT_DIR = CWD_DIR.parent

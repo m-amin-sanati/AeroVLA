@@ -205,3 +205,33 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# AeroVLA custom: large local data / model artifacts (not for git)
+/large_model_weights/  # placeholder (unused)
+/.local/**
+
+# Big per-env UE4 assets + raw episode archives
+envs/
+
+# Downloaded base model weights
+openvla-7b/
+
+# Eval output (trajectory camera frames, per-episode logs)
+eval_results/
+
+# zipped eval results bundle
+evals.zip
+
+# LoRA adapters / trained checkpoints
+checkpoints/
+
+# Generated dataset aggregates (large, regenerable)
+data/others/train_balance.json
+data/others/val_8s_8k.json
+data/aerovla_train_dataset.json
+
+# AirSim / runtime logs
+server.log
+eval.log
+xvfb.log
+

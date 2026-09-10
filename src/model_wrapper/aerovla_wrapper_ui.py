@@ -2,7 +2,7 @@ import cv2
 import torch
 import numpy as np
 from PIL import Image
-from transformers import AutoModelForVision2Seq, AutoTokenizer, AutoImageProcessor
+from transformers import AutoModelForVision2Seq, AutoTokenizer, AutoImageProcessor, BitsAndBytesConfig
 from scipy.spatial.transform import Rotation as R
 import re
 from peft import PeftModel
@@ -31,16 +31,22 @@ class AerialVLAWrapper(BaseModelWrapper):
 
         self.tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
         self.image_processor = AutoImageProcessor.from_pretrained(base_model_path, trust_remote_code=True)
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
         self.model = AutoModelForVision2Seq.from_pretrained(
             base_model_path, 
-            torch_dtype=torch.bfloat16,
+            quantization_config=bnb_config,
+            device_map="auto",
             low_cpu_mem_usage=True, 
             trust_remote_code=True
         )
         self.model.resize_token_embeddings(len(self.tokenizer))
         self.model = PeftModel.from_pretrained(self.model, adapter_path)
         # self.model = self.model.merge_and_unload()
-        self.model.to(self.device)
         self.model.eval()
 
     def get_semantic_direction(self, curr_state, target_pos):
@@ -154,7 +160,7 @@ class AerialVLAWrapper(BaseModelWrapper):
         pixel_values = torch.stack(pixel_values_list).to(self.device)
 
         if hasattr(self.model, "dtype"): 
-            pixel_values = pixel_values.to(self.model.dtype)
+            pixel_values = pixel_values.to(torch.bfloat16)
             
         inputs['pixel_values'] = pixel_values
         inputs = {k: v.to(self.device) for k, v in inputs.items()}

@@ -2,7 +2,7 @@
 
 # Configuration ------------------------------------
 PROJECT_ROOT="."
-MODEL_DIR="$PROJECT_ROOT/checkpoints/aero_vla"
+MODEL_DIR="$PROJECT_ROOT/checkpoints"
 EXP_NAME=$(basename "$MODEL_DIR")
 
 # [SEEN] ----------------------------------
@@ -15,7 +15,7 @@ EXP_NAME=$(basename "$MODEL_DIR")
 # TASK_ID="seen_valset/Carla_Town15"
 # TASK_ID="seen_valset/ModernCityMap"
 # TASK_ID="seen_valset/NewYorkCity"
-TASK_ID="seen_valset/NYCEnvironmentMegapa"
+TASK_ID="seen_valset/BrushifyCountryRoads"
 # TASK_ID="seen_valset/TropicalIsland"
 
 # [UNSEEN OBJECT] ----------------------------------
