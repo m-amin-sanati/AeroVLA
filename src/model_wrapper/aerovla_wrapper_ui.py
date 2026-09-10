@@ -6,8 +6,12 @@ from transformers import AutoModelForVision2Seq, AutoTokenizer, AutoImageProcess
 from scipy.spatial.transform import Rotation as R
 import re
 from peft import PeftModel
-import tkinter as tk
-from PIL import ImageTk
+try:
+    import tkinter as tk
+    from PIL import ImageTk
+except ImportError:  # headless env (no tkinter) - these are only used inside commented UI code
+    tk = None
+    ImageTk = None
 from src.model_wrapper.base_model import BaseModelWrapper 
 
 
