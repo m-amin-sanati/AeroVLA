@@ -126,10 +126,10 @@ When something becomes deprecated or is replaced:
   tracked, pidfile `/tmp/aerovla_eval_<PORT>.pid`); **`kill $(cat
   /tmp/aerovla_split_<PORT>.pid)` tears down everything** (server + tunnel + viewer +
   UE4 orphans via `fuser -k <PORT+1..+16>` + remote eval). Viewer fixed to a single
-  persistent tkinter window (commit `7a45cdb`). **Split eval RUNNING (2026-09-10,
-  windowed, healthy, 0 image timeouts)** on BrushifyCountryRoads: H100 client
-  (pidfile `/tmp/aerovla_eval_30000.pid`) + local UE4 server via reverse tunnel,
-  resume from prior results, `Completed: 34 / 82` at 13:33z.
+  persistent tkinter window (commit `7a45cdb`). **Scene view mode** = `SpringArmChase`
+  (chase cam) on port 30001 since commit `b59fc25` (UE4 reads `settings/<port>/settings.json`
+  `ViewMode` at launch only; current run keeps its baked view). During a run the eval
+  sets the drone pose every step → **no WASD flight**; the window is a watch-debug view.
 - **Git sync (since 2026-09-10)**: both repos now track the personal fork
   `git@github.com:m-amin-sanati/AeroVLA.git` (added as `fork` remote; `origin` stays
   upstream `XuPeng23/AeroVLA`). Fork `main` is the single source of truth; local + H100

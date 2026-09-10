@@ -256,6 +256,21 @@ bash scripts/split.sh 30000 --windowed  # also fine; port + flag in any order
   - windowed:  `-windowed -ResX=1280 -ResY=720 -WinX=740 -WinY=610 -NoSound -NoVSync -GraphicsAdapter=<gpu> -settings=<path>`
 - Offscreen remains the default; `--windowed` just adds the visible flag per run.
 
+### Camera view mode (ChaseCam default — 2026-09-10)
+- The in-window camera view is set by `"ViewMode"` in the scene's
+  `airsim_plugin/settings/<port>/settings.json`, read at **UE4 launch only**.
+- Port **30001 = `SpringArmChase` (chase cam, follows the drone)** since commit
+  `b59fc25`. Ports 30002/30003 already used `SpringArmChase`.
+- Options: `SpringArmChase` (chase/follow), `Manual` (free cam — you must pan
+  yourself), `NoDisplay` (no viewport).
+- **You CANNOT fly/pan the chased drone with WASD during a run**: the H100 eval
+  client sets the drone pose every step (teleport-style waypoints), overriding
+  keyboard. Keyboard input is `None` in these settings. The eval scene is a
+  watch-debug view; manual flight is only possible after killing the eval and
+  driving via the AirSim API.
+- To change the view: edit `<port>/settings.json` `ViewMode`, affects the
+  **next** UE4/server launch (current run keeps the view baked at its start).
+
 ### Facts verified on this box
 - A real X display exists: Xorg on `:1`, `HDMI-0` 1920x1080, owned by user
   `sanati` (uid 1000). No Xvfb is running; `DISPLAY=:1` is set for `sanati`.

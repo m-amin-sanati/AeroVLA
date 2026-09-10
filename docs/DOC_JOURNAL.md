@@ -584,3 +584,40 @@ eval) with no manual cleanup. Then relaunch the resumed windowed eval.
 3. On next H100 script touch: `git fetch fork && git reset --hard fork/main` to bring
    `7a45cdb` (viewer) onto the H100.
 4. Update `docs/SPLIT_RUNBOOK.md` with the one-command teardown + independent run_eval.sh.
+
+---
+
+## Session 2026-09-10 — View mode change: manual -> chase cam (session cont.4)
+
+### Goal
+User wanted to "freely move" in the main UE4 window; explained that's impossible
+during a run (eval drives the drone pose every step + KeyboardInput is None). User
+then asked to switch from Manual view to the original chase view, and to list the
+view options.
+
+### What I did
+- Diagnosed: the running scene on port **30001** launched with `ViewMode: Manual`
+  (free-cam). Ports 30002/30003 already used `SpringArmChase`.
+- Checked the airsim python client API for a runtime view switch: only
+  `simSetCameraPose`/`simSetCameraFov` exist — **no runtime `ViewMode` toggle**;
+  ViewMode is baked into `settings.json` at UE4 launch.
+- **Changed `airsim_plugin/settings/30001/settings.json` → `SpringArmChase`**
+  (copied the proven 30002 chase config; kept `ApiServerPort: 30001`, `ClockSpeed: 10`).
+  Committed `b59fc25` + pushed to fork.
+- **Did NOT touch the live run** (UE4 reads settings at launch only): eval still
+  healthy at `Completed: 64 / 82` when checked (7a07z → 14:07z).
+- Documented view modes in `docs/SPLIT_RUNBOOK.md` §5.5 + `AGENTS.md` §6.
+
+### Solved
+- View options (this AirSim build): `SpringArmChase` (chase/follow cam — the
+  original view), `Manual` (free cam), `NoDisplay` (no viewport).
+- Next `split.sh --windowed` launch automatically gets the chase cam.
+
+### Known
+- During a run the eval sets the drone pose every step → no keyboard flight even
+  in chase cam; the window is a watch-debug view. Manual flight = kill eval +
+  drive via AirSim API.
+
+### Next steps
+- Let current run finish (`Completed: 64 / 82`); on next launch the chase cam is
+  active. When the run completes, pull metrics + `scripts/metric.sh`.
