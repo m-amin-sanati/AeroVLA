@@ -12,22 +12,29 @@
 # knows the server is remote - no param.py change needed.
 #
 # Usage:
-#   bash scripts/split.sh [LOCAL_SERVER_PORT] [--windowed]
+#   bash scripts/split.sh [LOCAL_SERVER_PORT] [--windowed] [--cameras]
 #
 #   LOCAL_SERVER_PORT    port for the AeroVLA server (default 30000); AirSim
 #                        API ports are LOCAL_SERVER_PORT+1 .. +16.
 #   --windowed           launch UE4 in a visible window instead of offscreen,
 #                        so you can SEE the scene live.
+#   --cameras            ALSO show the live drone camera views (front/left/
+#                        right/rear/down) in a local window (requires local
+#                        DISPLAY). Picks up the first scene port
+#                        (=LOCAL_SERVER_PORT+1). Requires the aero_vla conda
+#                        env (airsim + Pillow + tkinter).
 # ============================================================================
 set -euo pipefail
 
 H100="main.copper.sanati-emp.coder"
 
 WINDOWED=0
+CAMERAS=0
 declare -a POS_ARGS=()
 for a in "$@"; do
   case "$a" in
     --windowed) WINDOWED=1 ;;
+    --cameras)  CAMERAS=1 ;;
     -h|--help)  sed -n '1,20p' "$0"; exit 0 ;;
     *)          POS_ARGS+=("$a") ;;
   esac
@@ -57,6 +64,7 @@ echo "  LOCAL port         : ${LOCAL_PORT} (+1..+16 AirSim API)"
 echo "  H100 host          : ${H100}"
 echo "  Project            : ${ROOT}"
 echo "  UE4 mode           : $([ ${WINDOWED} -eq 1 ] && echo 'WINDOWED (visible)' || echo 'offscreen')"
+echo "  Camera viewer      : $([ ${CAMERAS} -eq 1 ] && echo 'ON (live drone cams in local window)' || echo 'off')"
 echo "=============================================="
 
 # --------------------------------------------------------------------------
@@ -127,6 +135,35 @@ else
   echo "    WARNING: could not verify (H100 banner noise). Continuing."
 fi
 
+# --------------------------------------------------------------------------
+# 4. Optional: live drone camera viewer (LOCAL window, read-only)
+#    Connects to the first scene's AirSim API port (=LOCAL_PORT+1) as an
+#    independent client and shows front/left/right/rear/down feeds live.
+# --------------------------------------------------------------------------
+if [ ${CAMERAS} -eq 1 ]; then
+  SCENE_PORT=$((LOCAL_PORT + 1))
+  VIEWER_PY="${SERVER_PYTHON}"   # same aero_vla env has airsim+Pillow+tkinter
+  echo "==> Starting live camera viewer on AirSim :${SCENE_PORT} ..."
+  if [ -n "${DISPLAY:-}" ]; then
+    nohup env DISPLAY="${DISPLAY}" "$VIEWER_PY" \
+      "${ROOT}/scripts/camera_viewer.py" "${SCENE_PORT}" \
+      > /tmp/aerovla_cameras.log 2>&1 &
+    echo $! > /tmp/aerovla_cameras.pid
+    sleep 2
+    if ! kill -0 "$(cat /tmp/aerovla_cameras.pid)" 2>/dev/null; then
+      echo "    WARNING: camera viewer failed to start. See /tmp/aerovla_cameras.log"
+      tail -20 /tmp/aerovla_cameras.log
+    else
+      echo "    camera viewer pid $(cat /tmp/aerovla_cameras.pid)"
+      echo "    log: /tmp/aerovla_cameras.log"
+      echo "    (scene camera feed window opened; press q/close to stop later)"
+    fi
+  else
+    echo "    SKIP: no \$DISPLAY on this session - start viewer manually with:"
+    echo "    DISPLAY=:0 $VIEWER_PY ${ROOT}/scripts/camera_viewer.py ${SCENE_PORT}"
+  fi
+fi
+
 cat <<'EOF'
 
 ==============================================
@@ -137,7 +174,8 @@ NEXT: on the H100, run the eval client:
 Results go to:
   /workspaces/AeroVLA/eval_results/checkpoints/seen_valset/BrushifyCountryRoads
 
-To stop local server + tunnel:
-  kill $(cat /tmp/aerovla_server.pid) $(cat /tmp/aerovla_tunnel.pid)
+To stop local server + tunnel (+ camera viewer if launched):
+  kill $(cat /tmp/aerovla_server.pid) $(cat /tmp/aerovla_tunnel.pid) \
+       $(cat /tmp/aerovla_cameras.pid 2>/dev/null)
 ==============================================
 EOF

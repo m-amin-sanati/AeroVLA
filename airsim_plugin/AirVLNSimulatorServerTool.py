@@ -19,7 +19,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
   "SettingsVersion": 1.2,
   "SimMode": "Multirotor",
   "ClockSpeed": 10,
-  "ViewMode": "SpringArmChase",
+  "ViewMode": "Manual",
   "PhysiceEngineName": "ExternalPhysicsEngine",
   "Recording": {
     "RecordInterval": 1,
