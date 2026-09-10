@@ -30,6 +30,15 @@ PIDFILE="/tmp/aerovla_eval_${PORT}.pid"
 chmod -R a+rX "$PROJECT_ROOT" 2>/dev/null || true
 cd "$PROJECT_ROOT"
 
+# The eval runs as the 'ubuntu' user (su below) and redirects to $LOG. If the
+# log was pre-created by root (e.g. split.sh's ssh launcher, or a previous run)
+# ubuntu cannot open it -> "Permission denied" -> eval dies instantly. Make it
+# writable by everyone, and drop any stale pidfile so the confirm loop below is
+# honest.
+touch "$LOG" 2>/dev/null || true
+chmod 666 "$LOG" 2>/dev/null || true
+rm -f "$PIDFILE"
+
 cleanup() {
   local pid=""
   if [ -f "$PIDFILE" ]; then
