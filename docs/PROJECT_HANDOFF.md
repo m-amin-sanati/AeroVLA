@@ -96,6 +96,9 @@ Git status: 5 modified tracked files + several untracked new files/dirs.
 | `scripts/eval_aerovla.sh` | `MODEL_DIR="$PROJECT_ROOT/checkpoints"`, `TASK_ID="seen_valset/BrushifyCountryRoads"`. |
 | `requirements.txt` | (pins as-shipped: torch 2.1.2, transformers 4.42.4, peft 0.11.1, accelerate 0.32.1, bitsandbytes 0.43.1, timm 0.9.10 — see §6 about env changes.) |
 | `src/model_wrapper/aerovla_wrapper_ui.py` | **Switched model loading to 4-bit NF4** to try to fit 6 GB RTX 3050: added `BitsAndBytesConfig` import; `quantization_config=bnb_config, device_map="auto"` instead of `torch_dtype=torch.bfloat16` + `.to(device)`; pixel cast changed to `torch.bfloat16`. **NOTE:** this is a workaround only; on the H100 it should be **reverted to bf16** (see runbook §5). **2026-09-10:** `tkinter`/`ImageTk` imports wrapped in `try/except ImportError` (headless-safe — H100 venv has no tkinter; those imports are only used in commented UI blocks). Committed as `f0be9b2`. |
+| `scripts/split.sh` | **2026-09-10 (cont.3, `398ac2b`)**: resident loop `while true; do wait || true; done` (replaces `tail -f /dev/null` which swallowed TERM); clean-trap EXIT/INT/TERM + `_CLEANED` guard; clean step 1b **UE4-orphan kill** (`fuser -k` on `<PORT>+1..+16` + `pkill -9 -f settings/<PORT>/`); step 5 **auto-launch H100 eval** (`ssh H100 bash run_eval.sh <PORT> /tmp/split_eval.log`) + verify remote pidfile; `--no-eval`; `--cameras`; viewer `--retry 120`; pidfile `/tmp/aerovla_split_<PORT>.pid`; footer `kill ${MAIN_PID}`. |
+| `scripts/camera_viewer.py` | **2026-09-10 (cont.3, `7a45cdb`)**: single persistent tkinter window + reconnectable AirSim client inside `_update` (dropped `cv2` import). Fixes the `TclError: image "pyimageN" doesn't exist` crash from recreating a Tk root per retry. |
+| `scripts/run_eval.sh` (NEW tracked) | **2026-09-10 (cont.3, `398ac2b` + `9fa1637`)**: independent H100 eval launcher. argv `PORT`(30000) `LOG`(/tmp/split_eval.log). `touch $LOG; chmod 666 $LOG; rm -f $PIDFILE` before `su ubuntu -c` launch (log-Permission-denied fix); pidfile `/tmp/aerovla_eval_<PORT>.pid` (`su ubuntu -c 'nohup ... & echo $!'` — PID capture verified); INT/TERM/EXIT trap kills the eval; keep-alive wait loop. |
 
 ### Untracked / new files & dirs
 
@@ -178,7 +181,14 @@ fix 4–5 s `simGetImages` latency.
 | `eval_results/` | **DONE — synced locally (2026-09-09).** `eval_results/checkpoints/seen_valset/BrushifyCountryRoads/` = 123 episode dirs (50 `success_`, 73 plain → SR ≈ 40.65%). Each has `log/`, `ori_info.json`, `object_description.json`, camera dirs. No CSVs (metric.sh never ran). **2026-09-09 (cont.): the H100 copy of these 123 was moved to `BrushifyCountryRoads.bak_20260909_priorCPU123` and a fresh 123-ep split re-run is ACTIVE over the tunnel** (see "Split full-run state" row). |
 | Split tooling | `scripts/split.sh` (**2026-09-09 FIXED**: uses `aero_vla` python via `$SERVER_PYTHON` + deps check). Server tool canonical (2026-09-10): default `HOST=127.0.0.1`, optional `--host 0.0.0.0`, `--windowed` optional. Local server `0.0.0.0:30000` for split, reverse tunnel up, H100→`127.0.0.1:30000` = OK (verified 2026-09-09). |
 | Split tooling MSGPACK | **2026-09-09: H100 venv must have `msgpack==1.1.2`** (was 1.2.2 → msgpack-RPC framing breaks; server crashes `transport/tcp.py:27` on first real RPC; client silently dies). Fixed + verified via real RPC `ping`. |
-| Split full-run state | **2026-09-10 (cont. 2): WINDOWED SPLIT RE-RUN ACTIVE + VERIFIED.** Data prep completed first: `scripts/prepare_env_data.sh` generated `merged_data.json` for **320/320** episodes via the TravelUAV generator (was 0/320), symlinked `dataset_raw/BrushifyCountryRoads` → `envs/data_raws/BrushifyCountryRoads`, all **123/123 split entries resolve** (runbook §12 sanity check). Wrapper tkinter-import crash fixed (optional-import, `f0be9b2`). Local `split.sh --windowed` server up (`0.0.0.0:30000`), UE4 window rendering, H100 eval client stepping (`Step ~100+`, `Completed: 0/123` at check) — **first episode still in progress, ~5 h projected for all 123**. |
+| Split full-run state | **2026-09-10 (session cont.3): WINDOWED SPLIT RELAUNCHED + HEALTHY (REAL RUN).** One-command stack: `split.sh` now auto-launches H100 `run_eval.sh` (independent, tracked, pidfile `/tmp/aerovla_eval_<PORT>.pid`) and `kill $(cat /tmp/aerovla_split_<PORT>.pid)` tears down everything (server+tunnel+viewer+UE4 orphans via `fuser -k` + remote eval). run_eval.sh log-permission fix (`9fa1637`), viewer single-window fix (`7a45cdb`). **Local** split `1311614` + server + tunnel + UE4 scenes + camera viewer (pid `1366278`, fixed) up; ports 30000 (RPC) + 30001 (scene) bound. **H100** eval pid `2028537`, log `/tmp/split_eval.log`, **`Completed: 34 / 82` at 13:33z, actively navigating, 0 image timeouts** (resume from prior partial — result dirs not cleared, eval skips existing ep dirs via `env_uav.py:122`). Kill everything: `kill $(cat /tmp/aerovla_split_30000.pid)`. |
+
+**Split stack software state (2026-09-10):**
+| Component | State |
+|-----------|-------|
+| `scripts/split.sh` | Resident loop `while true; do wait || true; done` (NOT `tail -f` — that swallowed TERM); clean trap EXIT/INT/TERM; step 1b `fuser -k` scene ports `<PORT>+1..+16` + `pkill -9 -f settings/<PORT>/` (kills UE4 orphan); step 5 auto-launch `ssh H100 bash run_eval.sh <PORT> /tmp/split_eval.log`; `--no-eval`; `--cameras`; pidfile `/tmp/aerovla_split_<PORT>.pid`; footer `kill ${MAIN_PID}`. Commits `398ac2b`. |
+| `scripts/run_eval.sh` | Independent launcher: `PORT`(30000) `LOG`(/tmp/split_eval.log); `touch $LOG; chmod 666 $LOG; rm -f $PIDFILE` before launch (log-permission fix `9fa1637`); pidfile `/tmp/aerovla_eval_<PORT>.pid` via `su ubuntu -c 'nohup ... & echo $!'`; trap kills eval on INT/TERM/EXIT; keep-alive wait loop. |
+| `scripts/camera_viewer.py` | **2026-09-10 FIX (`7a45cdb`)**: single persistent tkinter window + reconnectable AirSim client inside `_update` (was: fresh Tk root per retry → `TclError: image "pyimageN" doesn't exist` crash). `--retry 120` in split.sh. |
 
 **Implication for local env use:** the local UE4 server resolves the launcher via
 `envs/<Map>/engine/<Map>/<Map>.sh`. Brushify **is now extracted** into that layout and
@@ -235,6 +245,12 @@ To sync H100: local `git push fork main`, H100 `git fetch fork && git reset --ha
 > (TravelUAV generator), `dataset_raw` symlinked, 123/123 split entries verified.
 > Wrapper tkinter-import fixed + committed (`f0be9b2`). Local server up with
 > `--windowed`, H100 client running (~5 h). See §7 row + `SPLIT_RUNBOOK.md`.
+> **2026-09-10 (cont. 3): SPLIT EVAL RELAUNCHED + HEALTHY (REAL RUN).** One-command
+> stack: `split.sh` auto-launches H100 `run_eval.sh`; `kill $(cat
+> /tmp/aerovla_split_30000.pid)` = full teardown. run_eval.sh log-permission fix
+> (`9fa1637`), viewer single-window fix (`7a45cdb`). Running: local split/UE4/viewer
+> up, H100 eval pid `2028537`, **`Completed: 34 / 82`** at 13:33z, 0 image timeouts
+> (resume from previous partial — result dirs NOT cleared). See §7 + `SPLIT_RUNBOOK.md`.
 
 Primary path (as documented in `docs/AEROVLA_EVAL_RUNBOOK.md`):
 1. **Transfer** the project to the H100 VM (rsync/tar; the env chunks + base weights +

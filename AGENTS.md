@@ -120,9 +120,16 @@ When something becomes deprecated or is replaced:
   (2026-09-10)**: if `merged_data.json` is missing, run on H100
   `bash scripts/prepare_env_data.sh <Map>` (TravelUAV generator → then symlinks
   `dataset_raw/<Map>` → `envs/data_raws/<Map>`). `aerovla_wrapper_ui.py` now has
-  optional `tkinter`/`ImageTk` imports (headless-safe; commit `f0be9b2`). **Split
-  eval currently RUNNING (2026-09-10, windowed)** on BrushifyCountryRoads (H100
-  client + local UE4 server via reverse tunnel, ~5 h projected).
+  optional `tkinter`/`ImageTk` imports (headless-safe; commit `f0be9b2`).
+- **One-command split (since 2026-09-10)**: `split.sh` auto-launches the H100 eval
+  via `ssh H100 bash scripts/run_eval.sh <PORT> /tmp/split_eval.log` (independent,
+  tracked, pidfile `/tmp/aerovla_eval_<PORT>.pid`); **`kill $(cat
+  /tmp/aerovla_split_<PORT>.pid)` tears down everything** (server + tunnel + viewer +
+  UE4 orphans via `fuser -k <PORT+1..+16>` + remote eval). Viewer fixed to a single
+  persistent tkinter window (commit `7a45cdb`). **Split eval RUNNING (2026-09-10,
+  windowed, healthy, 0 image timeouts)** on BrushifyCountryRoads: H100 client
+  (pidfile `/tmp/aerovla_eval_30000.pid`) + local UE4 server via reverse tunnel,
+  resume from prior results, `Completed: 34 / 82` at 13:33z.
 - **Git sync (since 2026-09-10)**: both repos now track the personal fork
   `git@github.com:m-amin-sanati/AeroVLA.git` (added as `fork` remote; `origin` stays
   upstream `XuPeng23/AeroVLA`). Fork `main` is the single source of truth; local + H100
