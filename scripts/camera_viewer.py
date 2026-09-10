@@ -94,12 +94,12 @@ class Viewer:
     def __init__(self, port):
         import tkinter as tk
         self.tk = tk
+        self.port = port
         self.root = tk.Tk()
         self.root.title("AeroVLA drone cameras")
         self.lbl = tk.Label(self.root, borderwidth=0)
         self.lbl.pack()
-        self.client = airsim.MultirotorClient(ip="127.0.0.1", port=port, timeout_value=15)
-        self.client.confirmConnection()
+        self.client = None
         self.frame_idx = 0
         self.titles = {
             "front": "FRONT", "left": "LEFT", "right": "RIGHT", "rear": "REAR", "down": "DOWN",
@@ -107,24 +107,35 @@ class Viewer:
         self._update()
         self.root.mainloop()
 
+    def _connect(self):
+        if self.client is None:
+            self.client = airsim.MultirotorClient(ip="127.0.0.1", port=self.port, timeout_value=15)
+            self.client.confirmConnection()
+        return self.client
+
     def _update(self):
-        import cv2  # only used for BGR->RGB conversion of raw uint8 buffers
-        frames = fetch_images(self.client)
-        panel = make_panel(frames, self.titles)
-        draw = ImageDraw.Draw(panel)
         try:
-            pos = self.client.getMultirotorState().kinematics_estimated.position
-            vel = self.client.getMultirotorState().kinematics_estimated.linear_velocity
-            speed = np.sqrt(vel.x_val**2 + vel.y_val**2 + vel.z_val**2)
-            line = (f"frame {self.frame_idx}  pos x={pos.x_val:.1f} y={pos.y_val:.1f} "
-                    f"z={pos.z_val:.1f}  speed {speed:.2f} m/s")
-        except Exception:
-            line = f"frame {self.frame_idx}"
-        draw.rectangle((0, 0, panel.width, 60), fill=(0, 0, 0))
-        draw.text((12, 12), line, fill=(0, 255, 0))
-        photo = ImageTk.PhotoImage(panel)
-        self.lbl.configure(image=photo)
-        self.lbl.image = photo
+            client = self._connect()
+            frames = fetch_images(client)
+            panel = make_panel(frames, self.titles)
+            draw = ImageDraw.Draw(panel)
+            try:
+                pos = client.getMultirotorState().kinematics_estimated.position
+                vel = client.getMultirotorState().kinematics_estimated.linear_velocity
+                speed = np.sqrt(vel.x_val**2 + vel.y_val**2 + vel.z_val**2)
+                line = (f"frame {self.frame_idx}  pos x={pos.x_val:.1f} y={pos.y_val:.1f} "
+                        f"z={pos.z_val:.1f}  speed {speed:.2f} m/s")
+            except Exception:
+                line = f"frame {self.frame_idx}"
+            draw.rectangle((0, 0, panel.width, 60), fill=(0, 0, 0))
+            draw.text((12, 12), line, fill=(0, 255, 0))
+            photo = ImageTk.PhotoImage(panel)
+            self.lbl.configure(image=photo)
+            self.lbl.image = photo
+        except Exception as e:
+            # Keep the SAME window alive; just retry the AirSim client next tick.
+            self.client = None
+            print(f"viewer: recovering ({type(e).__name__}: {e}); retrying ...", flush=True)
         self.frame_idx += 1
         self.root.after(50, self._update)
 
@@ -137,13 +148,13 @@ def main():
     deadline = time.time() + args.retry
     while True:
         try:
-            Viewer(args.port)
-            return  # Viewer runs its own mainloop; returns only on window close
+            Viewer(args.port)  # own Tk root + mainloop; window keeps retrying the client internally
+            return  # returns only on window close
         except Exception as e:
             if time.time() >= deadline:
                 print(f"viewer error: {type(e).__name__}: {e}")
                 sys.exit(1)
-            print(f"viewer: scene :{args.port} not ready yet ({type(e).__name__}); retrying ...")
+            print(f"viewer: could not open window ({type(e).__name__}: {e}); retrying ...")
             time.sleep(2)
 
 
