@@ -235,3 +235,6 @@ server.log
 eval.log
 xvfb.log
 
+# TravelUAV is a separate upstream project (has its own .git) — vendored only
+TravelUAV/
+
