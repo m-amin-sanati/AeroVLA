@@ -455,3 +455,57 @@ engine into the canonical `envs/<Map>/engine/<Map>/` layout so split eval can ru
   to get user go-ahead.)
 - Optionally reorganize ForestPack engine to `engine/` schema + register in
   `env_exec_path_dict` if a ForestPack eval is ever needed (not now).
+
+## Session 2026-09-10 (cont. 2) — Data prep flow + windowed split eval launch
+
+**Goal**: generate the missing `merged_data.json` for every BrushifyCountryRoads
+episode and launch the **windowed** split eval (local UE4 server + H100 client).
+
+**What I did**
+- **Synced H100 to `bf728b0`** (which added `scripts/prepare_env_data.sh`):
+  `git fetch fork && git reset --hard fork/main`.
+- **Ran the prep on H100** (`bash scripts/prepare_env_data.sh BrushifyCountryRoads`):
+  - `episodes total: 320, missing merged_data.json: 320` → generated all via the
+    TravelUAV generator (`generate_merged_json.py --root_dir envs/data_raws --map_list ...`).
+  - `still missing after generation: 0`
+  - `symlink OK: dataset_raw/BrushifyCountryRoads -> envs/data_raws/BrushifyCountryRoads`
+  - Verified 320/320 episodes now have `merged_data.json`; the script's trailing
+    "WARNING: no episode with merged_data.json" is a **false alarm** — its `find`
+    check doesn't traverse the symlink. `find -L` + `ls -d` both resolve fine.
+- **Sanity-checked the exact eval read**: `dataset_raw/<map>/<uuid>/merged_data.json`
+  for entry 0 of `seen_valset_splits/BrushifyCountryRoads.json` → **exists: True**,
+  mark.json present, 412 frames, instruction text present. All **123/123 split
+  entries resolve** (0 missing). `chmod -R ugo+rX envs/data_raws/BrushifyCountryRoads`
+  → `ubuntu CAN read merged_data`. `map_spawnarea_info.json` has the map.
+- **Launched the split** (user go-ahead): local `bash scripts/split.sh --windowed`
+  → server `0.0.0.0:30000`, reverse tunnels `:30000–:30016`, server pid + tunnel pid
+  alive, `OK: H100 -> 127.0.0.1:30000 reachable`. Then on H100
+  `nohup bash scripts/run_eval.sh > /tmp/split_eval.log &`.
+
+**Problems faced**
+1. **Eval crash #1: `ModuleNotFoundError: No module named 'tkinter'`** in
+   `src/model_wrapper/aerovla_wrapper_ui.py:9-10` on H100. The pristine upstream
+   wrapper imports `tkinter` + `ImageTk` unconditionally, but those are only used in
+   commented UI blocks and the H100 venv has no tkinter.
+   - **Fix**: wrapped the two imports in `try/except ImportError` (`tk = None;
+     ImageTk = None`), committed as `f0be9b2`, pushed to fork, H100 `git reset --hard
+     fork/main` → wrapper import OK on H100.
+2. **msgpack `TypeError: object of type 'int' has no len()`** entries in local
+   server log — confirmed **benign**: they come from the `echo >/dev/tcp` port-probe
+   closing mid-RPC in `split.sh`, not from real eval traffic. Verified by a real RPC
+   from H100 through the tunnel (`msgpackrpc.Client.call("get_state")` → returned
+   `RPCError 'get_state' method not found`, i.e. framing works, method just unregistered).
+
+**Current state**
+- Split eval **RUNNING**: H100 `eval_aerovla.py` stepping through navigation
+  (`Step: 74 → 81, Completed: 0 / 123` at check), local UE4 window alive+rendering
+  (`Binaries/Linux/BrushifyCountryRoads`, etime ~1-2min), server listening
+  `127.0.0.1:30000`. Eval reports `Loaded dataset 63` — that's the eval's own
+  post-filter count of the 123 split entries (grouping/filtering), expected.
+- Result dir: `eval_results/checkpoints/seen_valset/BrushifyCountryRoads` (ubuntu).
+
+**Next steps**
+- Let eval finish (~remaining 122 episodes × ~1.5s-2 min each, hours).
+- Document this session in SPLIT/AEROVAL_RUNBOOK + PROJECT_HANDOFF; commit+push+sync.
+- After completion: pull `eval_results` metrics, write `docs/AEROVLA_EVAL_RUNBOOK.md`
+  results section.

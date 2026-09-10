@@ -116,7 +116,13 @@ When something becomes deprecated or is replaced:
   `envs/BrushifyForestPack/envs/BrushifyForestPack/` (pending move to `engine/`;
   not registered in `env_exec_path_dict`, not needed for brushify eval).
 - **Split eval is launch-ready**: local `bash scripts/split.sh [PORT] [--windowed]`
-  sanity check passes; then H100 `bash scripts/run_eval.sh`.
+  sanity check passes; then H100 `bash scripts/run_eval.sh`. **Data prep flow
+  (2026-09-10)**: if `merged_data.json` is missing, run on H100
+  `bash scripts/prepare_env_data.sh <Map>` (TravelUAV generator → then symlinks
+  `dataset_raw/<Map>` → `envs/data_raws/<Map>`). `aerovla_wrapper_ui.py` now has
+  optional `tkinter`/`ImageTk` imports (headless-safe; commit `f0be9b2`). **Split
+  eval currently RUNNING (2026-09-10, windowed)** on BrushifyCountryRoads (H100
+  client + local UE4 server via reverse tunnel, ~5 h projected).
 - **Git sync (since 2026-09-10)**: both repos now track the personal fork
   `git@github.com:m-amin-sanati/AeroVLA.git` (added as `fork` remote; `origin` stays
   upstream `XuPeng23/AeroVLA`). Fork `main` is the single source of truth; local + H100

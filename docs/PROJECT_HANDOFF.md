@@ -95,7 +95,7 @@ Git status: 5 modified tracked files + several untracked new files/dirs.
 | `data/meta/map_spawnarea_info.json` | Added `BrushifyCountryRoads` entry: **56 spawn areas / 28 assets**. Rows built so `find_closest_area` matches every target; each row = `[bbox_min_x,y,z, bbox_max_x,y,z, euler(3), place_pos(3), quat(w,x,y,z), asset_name, scale]` (≥18 elements). Verified **0 asset mismatches** across all episodes. |
 | `scripts/eval_aerovla.sh` | `MODEL_DIR="$PROJECT_ROOT/checkpoints"`, `TASK_ID="seen_valset/BrushifyCountryRoads"`. |
 | `requirements.txt` | (pins as-shipped: torch 2.1.2, transformers 4.42.4, peft 0.11.1, accelerate 0.32.1, bitsandbytes 0.43.1, timm 0.9.10 — see §6 about env changes.) |
-| `src/model_wrapper/aerovla_wrapper_ui.py` | **Switched model loading to 4-bit NF4** to try to fit 6 GB RTX 3050: added `BitsAndBytesConfig` import; `quantization_config=bnb_config, device_map="auto"` instead of `torch_dtype=torch.bfloat16` + `.to(device)`; pixel cast changed to `torch.bfloat16`. **NOTE:** this is a workaround only; on the H100 it should be **reverted to bf16** (see runbook §5). |
+| `src/model_wrapper/aerovla_wrapper_ui.py` | **Switched model loading to 4-bit NF4** to try to fit 6 GB RTX 3050: added `BitsAndBytesConfig` import; `quantization_config=bnb_config, device_map="auto"` instead of `torch_dtype=torch.bfloat16` + `.to(device)`; pixel cast changed to `torch.bfloat16`. **NOTE:** this is a workaround only; on the H100 it should be **reverted to bf16** (see runbook §5). **2026-09-10:** `tkinter`/`ImageTk` imports wrapped in `try/except ImportError` (headless-safe — H100 venv has no tkinter; those imports are only used in commented UI blocks). Committed as `f0be9b2`. |
 
 ### Untracked / new files & dirs
 
@@ -104,6 +104,7 @@ Git status: 5 modified tracked files + several untracked new files/dirs.
 | `data/uav_dataset/seen_valset_splits/BrushifyCountryRoads.json` | Eval split: **123 episodes**, format `{"json":"BrushifyCountryRoads/<uuid>/merged_data.json","frame":1}`. Verified all entries resolve. |
 | `dataset_raw/BrushifyCountryRoads/` | On **H100**: symlinks → `/workspaces/AeroVLA/envs/BrushifyCountryRoads/<uuid>/` (used by eval `--dataset_path`). On **local**: stale/broken symlinks to a nonexistent `raw/` (not used — episodes live on H100). |
 | `docs/AEROVLA_EVAL_RUNBOOK.md` | Ops runbook for VM execution (this repo's companion). |
+| `scripts/prepare_env_data.sh` | **New 2026-09-10**: counts episodes missing `merged_data.json` in `envs/data_raws/<Map>/`, runs the TravelUAV generator (`TravelUAV/Model/LLaMA-UAV/tools/generate_merged_json.py --root_dir envs/data_raws --map_list <Map>`) to create them, then `ln -sfn dataset_raw/<Map>` → `envs/data_raws/<Map>`. Committed `bf728b0`. |
 | `envs/` | Split zip chunks of the env (see §7 — NOT yet extracted on local). |
 | `openvla-7b/`, `checkpoints/`, `TravelUAV/` | Base weights (~14.7 GB), LoRA adapter, upstream benchmark data — untracked, must exist for eval. |
 
@@ -177,7 +178,7 @@ fix 4–5 s `simGetImages` latency.
 | `eval_results/` | **DONE — synced locally (2026-09-09).** `eval_results/checkpoints/seen_valset/BrushifyCountryRoads/` = 123 episode dirs (50 `success_`, 73 plain → SR ≈ 40.65%). Each has `log/`, `ori_info.json`, `object_description.json`, camera dirs. No CSVs (metric.sh never ran). **2026-09-09 (cont.): the H100 copy of these 123 was moved to `BrushifyCountryRoads.bak_20260909_priorCPU123` and a fresh 123-ep split re-run is ACTIVE over the tunnel** (see "Split full-run state" row). |
 | Split tooling | `scripts/split.sh` (**2026-09-09 FIXED**: uses `aero_vla` python via `$SERVER_PYTHON` + deps check). Server tool canonical (2026-09-10): default `HOST=127.0.0.1`, optional `--host 0.0.0.0`, `--windowed` optional. Local server `0.0.0.0:30000` for split, reverse tunnel up, H100→`127.0.0.1:30000` = OK (verified 2026-09-09). |
 | Split tooling MSGPACK | **2026-09-09: H100 venv must have `msgpack==1.1.2`** (was 1.2.2 → msgpack-RPC framing breaks; server crashes `transport/tcp.py:27` on first real RPC; client silently dies). Fixed + verified via real RPC `ping`. |
-| Split full-run state | **2026-09-09: FULL 123-ep SPLIT RE-RUN ACTIVE + VERIFIED WRITING RESULTS** to fresh `eval_results/checkpoints/seen_valset/BrushifyCountryRoads/` (ubuntu-owned). Prior 123 CPU results moved to `BrushifyCountryRoads.bak_20260909_priorCPU123`. At last check **10/123** done (1 success, 3 oracle, rest plain), client alive, ~5 h projected. |
+| Split full-run state | **2026-09-10 (cont. 2): WINDOWED SPLIT RE-RUN ACTIVE + VERIFIED.** Data prep completed first: `scripts/prepare_env_data.sh` generated `merged_data.json` for **320/320** episodes via the TravelUAV generator (was 0/320), symlinked `dataset_raw/BrushifyCountryRoads` → `envs/data_raws/BrushifyCountryRoads`, all **123/123 split entries resolve** (runbook §12 sanity check). Wrapper tkinter-import crash fixed (optional-import, `f0be9b2`). Local `split.sh --windowed` server up (`0.0.0.0:30000`), UE4 window rendering, H100 eval client stepping (`Step ~100+`, `Completed: 0/123` at check) — **first episode still in progress, ~5 h projected for all 123**. |
 
 **Implication for local env use:** the local UE4 server resolves the launcher via
 `envs/<Map>/engine/<Map>/<Map>.sh`. Brushify **is now extracted** into that layout and
@@ -229,6 +230,11 @@ To sync H100: local `git push fork main`, H100 `git fetch fork && git reset --ha
 > adding ANOTHER env (unzip → env_exec_path_dict → spawn areas → H100 episodes +
 > symlinks → split json → run_eval.sh → launch). Derived from the Brushify
 > integration; verified live-image eval path (no feature.tensor needed).
+> **2026-09-10 (cont. 2): WINDOWED SPLIT EVAL ACTIVE.** Data prep
+> (`scripts/prepare_env_data.sh`) generated 320/320 `merged_data.json` on H100
+> (TravelUAV generator), `dataset_raw` symlinked, 123/123 split entries verified.
+> Wrapper tkinter-import fixed + committed (`f0be9b2`). Local server up with
+> `--windowed`, H100 client running (~5 h). See §7 row + `SPLIT_RUNBOOK.md`.
 
 Primary path (as documented in `docs/AEROVLA_EVAL_RUNBOOK.md`):
 1. **Transfer** the project to the H100 VM (rsync/tar; the env chunks + base weights +

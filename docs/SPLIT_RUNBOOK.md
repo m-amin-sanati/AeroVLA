@@ -42,10 +42,12 @@ AirVLNSimulatorServerTool.py   :30000      (venv, bf16 model, CUDA inference)
   `backports.ssl-match-hostname`, `airsim==1.8.1` (manual copy), `einops`, `psutil`.
 - Patched `.venv/lib/python3.12/site-packages/airsim/client.py` (removed
   `pack_encoding/unpack_encoding='utf-8'`) — required to avoid 4–5 s/step latency.
-- `src/model_wrapper/aerovla_wrapper_ui.py`: **bf16** load (reverted from 4-bit),
-  and `tkinter`/`ImageTk` imports made optional (no tkinter in venv).
-- Data ready: 131 `merged_data.json`, 123 `dataset_raw` symlinks, split file
-  (123 eps), `map_spawnarea_info.json` (56 areas).
+- `src/model_wrapper/aerovla_wrapper_ui.py`: **bf16** load (reverted from 4-bit);
+  `tkinter`/`ImageTk` imports made **optional** (no tkinter in H100 venv — committed
+  as `f0be9b2` in the fork upstream, so no local patch needed).
+- Data ready (2026-09-10): **320/320** `merged_data.json` generated via the TravelUAV
+  generator (`scripts/prepare_env_data.sh`), `dataset_raw/BrushifyCountryRoads`
+  symlinked to the episode source, split file (123 eps), `map_spawnarea_info.json`.
 - Eval CLI (unchanged defaults): `--simulator_tool_port 30000` etc.
 
 ---
@@ -102,16 +104,23 @@ server-render-only and harmless to the client process — leave them.
 > **FULL RUN VERIFIED 2026-09-09 (cont.)**: a full re-run of the 123-episode
 > eval through the split ended the earlier flapping and produced real results.
 > Sequence that works:
-> 1. Local: `bash scripts/split.sh` (server + tunnel up).
-> 2. H100: make `eval_save_path` EMPTY or the client will silently exit (see
+> 1. **H100 (once per env): ensure `merged_data.json` exists.** If
+>    `envs/data_raws/<Map>/` has episode dirs but no `merged_data.json`, run
+>    `bash scripts/prepare_env_data.sh <Map>` (generates via TravelUAV
+>    `generate_merged_json.py`, then symlinks `dataset_raw/<Map>` →
+>    `envs/data_raws/<Map>`). Verify: `find -L dataset_raw/<Map> -maxdepth 2
+>    -name merged_data.json | wc -l` should equal episode count; run the runbook
+>    §12 sanity check for the split entries (0 missing).
+> 2. Local: `bash scripts/split.sh` (server + tunnel up).
+> 3. H100: make `eval_save_path` EMPTY or the client will silently exit (see
 >    gotcha 6 below). Backup any prior results first:
 >    `mv eval_results/checkpoints/seen_valset/BrushifyCountryRoads
 >        eval_results/checkpoints/seen_valset/BrushifyCountryRoads.bak_<tag>`
 >    and `mkdir -p eval_results/checkpoints/seen_valset/BrushifyCountryRoads`.
 >    **Then `chown ubuntu:ubuntu` it** (see gotcha 7).
-> 3. H100: `cd /workspaces/AeroVLA && nohup bash scripts/run_eval.sh >
+> 4. H100: `cd /workspaces/AeroVLA && nohup bash scripts/run_eval.sh >
 >    /tmp/split_eval.log 2>&1 &` (detached — plain `&` in one ssh cmd hangs ssh).
-> 4. Watch: result dirs appear under
+> 5. Watch: result dirs appear under
 >    `eval_results/checkpoints/seen_valset/BrushifyCountryRoads/`; each has
 >    `log/` (JSON), `frontcamera/`+`downcamera/`+`rightcamera/`+`rearcamera/`
 >    (+ `_depth/`), `object_description.json`, `ori_info.json`. Ended at
