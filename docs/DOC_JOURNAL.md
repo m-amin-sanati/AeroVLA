@@ -509,3 +509,78 @@ episode and launch the **windowed** split eval (local UE4 server + H100 client).
 - Document this session in SPLIT/AEROVAL_RUNBOOK + PROJECT_HANDOFF; commit+push+sync.
 - After completion: pull `eval_results` metrics, write `docs/AEROVLA_EVAL_RUNBOOK.md`
   results section.
+
+---
+
+## Session 2026-09-10 — One-command teardown + independent run_eval.sh + relaunch (session cont.3)
+
+### Goal
+Make the split stack fully operable with **single-command teardown**: an independent
+`scripts/run_eval.sh` (tracked, standalone-capable) auto-launched by `scripts/split.sh`;
+killing either script tears down everything (local server + tunnel + viewer + remote H100
+eval) with no manual cleanup. Then relaunch the resumed windowed eval.
+
+### What I did
+- `git log 7670988` (prev session): ViewMode Manual + viewer + `--cameras` already pushed.
+- **Diagnosed teardown bug**: `kill -TERM <split-pid>` did NOT fire the cleanup trap.
+- **Root cause**: split.sh's resident loop was `tail -f /dev/null` (an external command);
+  bash defers signal dispatch while a foreground child runs, so TERM to the script pid
+  sat until `tail` exited (never). **Fix**: replace with `while true; do wait || true; done`
+  — `wait` (builtin) catches TERM immediately and runs the trap. Verified in isolation
+  (`/tmp/tsh3.sh`) and end-to-end: `kill -TERM <MAIN_PID>` now stops server+tunnel+viewer,
+  ports free, teardown messages logged.
+- **Added UE4-orphan kill (cleanup step 1b)**: killing the server left the UE4 scene
+  binary alive (`BrushifyCountryRoads` grandchild of `bash <env>.sh`; `pkill -P` misses it).
+  Fix: `fuser -k -TERM/-KILL` on scene ports `LOCAL_PORT+1..+16` + `pkill -9 -f settings/<PORT>/`.
+  Verified with a fake scene bound to :30012 → killed on teardown.
+- **Created `scripts/run_eval.sh`** (NEW, independent): args `PORT`(30000)/`LOG`(/tmp/split_eval.log);
+  writes `/tmp/aerovla_eval_<PORT>.pid` on H100 via `su ubuntu -c 'nohup $VENV ... eval_aerovla.py
+  ... & echo $! >$PIDFILE'`; cleanup trap on EXIT/INT/TERM; keep-alive wait loop. Command matches
+  the validated manual eval invocation. `bash -n` OK.
+- **split.sh**: `MAIN_PID=$$`; `--no-eval`; `--cameras`; pid vars; `_CLEANED` double-trap guard;
+  clean trap EXIT/INT/TERM; step 5 auto-launches `ssh H100
+  "bash /workspaces/AeroVLA/scripts/run_eval.sh <PORT> /tmp/split_eval.log"` and verifies remote
+  pidfile; footer `kill ${MAIN_PID}`; pidfile `/tmp/aerovla_split_<PORT>.pid`.
+- **camera_viewer.py bug**: `TclError: image "pyimage29" doesn't exist` crash. Root cause: the
+  retry loop created a **new Tk root** per attempt; a mid-flight frame error destroyed the Tk
+  interpreter while the Label still referenced a PhotoImage from the dead interpreter.
+  **Fix**: single persistent Tk window + reconnectable AirSim client inside `_update`
+  (set `self.client=None` on error, retry next tick); keep `self.lbl.image` reference; drop
+  unused `cv2` import. Verified: viewer alive 2+ min @ ~12% CPU (old one died <30s).
+- **run_eval.sh log-permission bug**: `bash: line 2: /tmp/split_eval.log: Permission denied` →
+  eval died instantly, "could not confirm remote eval start". Root cause: the log redirect is
+  inside `su ubuntu -c`, and `/tmp/split_eval.log` was pre-created root-owned by split.sh's
+  ssh launcher. **Fix**: `touch $LOG; chmod 666 $LOG; rm -f $PIDFILE` before the `su` launch.
+
+### Problems faced
+- `kill -TERM` swallowed by `tail -f /dev/null` (see above).
+- H100 reverse-forward ports 30000-30016 re-bound by a stale test tunnel → cleared before relaunch.
+- H100 ssh flaky/noisy (`version mismatch`, banner timeouts) → all ssh wrapped in `timeout`
+  + `LogLevel=ERROR` + `grep -v` filter; some ssh calls still hung the 120s tool timeout
+  (bounded later with `timeout 30 ssh` + `tail -c 400`).
+- Earlier "image request timed out" hang in the first relaunch was a **red herring**:
+  it occurred because the eval failed at launch (log Permission denied → eval never really
+  ran; the `1 / 84` progress line was from a prior stale log block). Once the log-permission
+  fix landed, the real run shows **0 image timeouts**.
+
+### Current state (IMPORTANT — live)
+- **Split eval RUNNING** (real, healthy), port 30000 windowed + cameras:
+  - Local split `1311614`, server `1311646`, tunnel `1311751`, UE4 scenes alive
+    (3× `BrushifyCountryRoads`), ports 30000 (RPC)+30001 (scene) bound.
+  - Camera viewer **1366278** running with the fixed single-window client.
+  - H100 eval pidfile `/tmp/aerovla_eval_30000.pid` → pid `2028537`; log
+    `/tmp/split_eval.log`; **`Completed: 34 / 82`** at 13:33 windowed, actively navigating,
+    0 image timeouts. Resume works (skips prior result dirs; 82 remaining of 123).
+  - To stop everything: `kill $(cat /tmp/aerovla_split_30000.pid)` (i.e. 1311614).
+- Commits pushed to fork `main`: `398ac2b` (run_eval.sh+split.sh teardown fixes),
+  `9fa1637` (log perm fix), `7a45cdb` (viewer single-window fix). H100 synced to `9fa1637`
+  before launch (viewer fix `7a45cdb` is local-only so far — H100 doesn't need it for the
+  running eval; sync it when next touching H100 scripts).
+
+### Next steps
+1. Let eval finish (34/82; ~remaining × ~1.5-2 min/ep ≈ 1.5-2 h more at current pace).
+2. After completion: pull `eval_results/checkpoints/seen_valset/BrushifyCountryRoads`
+   metrics, run `bash scripts/metric.sh`, update `docs/AEROVLA_EVAL_RUNBOOK.md` results.
+3. On next H100 script touch: `git fetch fork && git reset --hard fork/main` to bring
+   `7a45cdb` (viewer) onto the H100.
+4. Update `docs/SPLIT_RUNBOOK.md` with the one-command teardown + independent run_eval.sh.

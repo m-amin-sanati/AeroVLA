@@ -101,9 +101,60 @@ server-render-only and harmless to the client process — leave them.
 
 ## 4. Run sequence (split — VERIFIED)
 
+> **CURRENT FLOW (2026-09-10, replace of the manual steps below)**: one-command
+> start + one-command teardown. `scripts/split.sh` now **auto-launches**
+> `scripts/run_eval.sh` on the H100 over SSH (no manual Terminal 2 step needed),
+> and killing either script tears down the whole stack.
+>
+> **START (one command):**
+> ```bash
+> # LOCAL (a non-root user; UE4 refuses root):
+> bash scripts/split.sh 30000 --windowed --cameras
+> #   -> starts local server + reverse tunnel + camera viewer,
+> #   -> auto-runs `ssh H100 bash /workspaces/AeroVLA/scripts/run_eval.sh 30000 /tmp/split_eval.log`,
+> #      confirms remote pid via /tmp/aerovla_eval_30000.pid,
+> #   -> writes /tmp/aerovla_split_30000.pid
+> # Or detached (verified launch pattern):
+> # DISPLAY=:1 setsid nohup bash scripts/split.sh 30000 --windowed --cameras > /tmp/aerovla_split_real3.log 2>&1 &
+> ```
+>
+> **STOP (ONE command — tears down local server + tunnel + viewer + remote H100 eval):**
+> ```bash
+> kill $(cat /tmp/aerovla_split_30000.pid)
+> #   -> split trap: fuser -k scene ports 30001..30016 (kills UE4 orphans),
+> #      kills server + tunnel + viewer, ssh-kills the remote eval via its pidfile,
+> #      prints "==> teardown complete."
+> ```
+>
+> **Standalone H100 eval (run_eval.sh independent of split.sh):**
+> ```bash
+> # ON H100:
+> cd /workspaces/AeroVLA && bash scripts/run_eval.sh 30000 /tmp/split_eval.log
+> # argv: PORT(default 30000) LOG(default /tmp/split_eval.log)
+> #   -> writes /tmp/aerovla_eval_<PORT>.pid via `su ubuntu -c nohup ... & echo $!`,
+> #   -> trap kills the eval on INT/TERM/EXIT. Requires the reverse tunnel already up
+> #      (proxying H100 127.0.0.1:30000 -> local server).
+> ```
+>
+> **Verification while running:**
+> ```bash
+> # LOCAL: split alive + ports bound
+> ps -p $(cat /tmp/aerovla_split_30000.pid)   # split main
+> ss -ltn | grep -E ":300(0[0-9]|1[0-6])"       # 30000 RPC + 30001 scene
+> # H100: eval alive + progress (0 "Request timed out")
+> timeout 30 ssh main.copper.sanati-emp.coder 'ps -p $(cat /tmp/aerovla_eval_30000.pid); tail -c 400 /tmp/split_eval.log; grep -c "Request timed out" /tmp/split_eval.log'
+> ```
+>
+> Notes: the H100 SSH is flaky/noisy — always wrap in `timeout 30` +
+> `-o ConnectTimeout=10 -o LogLevel=ERROR` and grep-filter banner noise. Do **not**
+> clear `eval_results/checkpoints/seen_valset/BrushifyCountryRoads` between runs:
+> the eval skips episodes whose result dirs already exist (`src/vlnce_src/env_uav.py:122`)
+> → that is how resume works.
+
 > **FULL RUN VERIFIED 2026-09-09 (cont.)**: a full re-run of the 123-episode
 > eval through the split ended the earlier flapping and produced real results.
-> Sequence that works:
+> Sequence that works (pre-2026-09-10 manual method — superseded by the automated
+> flow above, kept for reference):
 > 1. **H100 (once per env): ensure `merged_data.json` exists.** If
 >    `envs/data_raws/<Map>/` has episode dirs but no `merged_data.json`, run
 >    `bash scripts/prepare_env_data.sh <Map>` (generates via TravelUAV
@@ -114,12 +165,12 @@ server-render-only and harmless to the client process — leave them.
 > 2. Local: `bash scripts/split.sh` (server + tunnel up).
 > 3. H100: make `eval_save_path` EMPTY or the client will silently exit (see
 >    gotcha 6 below). Backup any prior results first:
->    `mv eval_results/checkpoints/seen_valset/BrushifyCountryRoads
->        eval_results/checkpoints/seen_valset/BrushifyCountryRoads.bak_<tag>`
+>    `mv eval_results/checkpoints/seen_valset/BrushifyCountryRoads`
+>        `eval_results/checkpoints/seen_valset/BrushifyCountryRoads.bak_<tag>`
 >    and `mkdir -p eval_results/checkpoints/seen_valset/BrushifyCountryRoads`.
 >    **Then `chown ubuntu:ubuntu` it** (see gotcha 7).
-> 4. H100: `cd /workspaces/AeroVLA && nohup bash scripts/run_eval.sh >
->    /tmp/split_eval.log 2>&1 &` (detached — plain `&` in one ssh cmd hangs ssh).
+> 4. H100: `cd /workspaces/AeroVLA && nohup bash scripts/run_eval.sh >`
+>    `/tmp/split_eval.log 2>&1 &` (detached — plain `&` in one ssh cmd hangs ssh).
 > 5. Watch: result dirs appear under
 >    `eval_results/checkpoints/seen_valset/BrushifyCountryRoads/`; each has
 >    `log/` (JSON), `frontcamera/`+`downcamera/`+`rightcamera/`+`rearcamera/`
@@ -147,12 +198,13 @@ server-render-only and harmless to the client process — leave them.
 
 ```
 # Terminal 1 — LOCAL (as a non-root user; UE4 refuses root):
+# This one command starts server + tunnel + viewer AND auto-launches the H100 eval:
 bash /path/to/AeroVLA/scripts/split.sh
-#   -> starts server, opens tunnels, prints "NEXT: on the H100, run ..."
+#   -> starts server, opens tunnels, auto-runs run_eval.sh on H100 over ssh,
+#      prints "==> remote eval pid <N>"; write /tmp/aerovla_split.pid
 
-# Terminal 2 — H100:
-cd /workspaces/AeroVLA
-bash scripts/run_eval.sh      # UNCHANGED (uses --simulator_tool_port 30000 -> H100 localhost -> tunnel -> local UE4)
+# (No Terminal 2 needed — split.sh handles the H100 eval launch.)
+# To stop everything: kill $(cat /tmp/aerovla_split.pid)  -> full teardown.
 ```
 
 Results still write to `eval_results/checkpoints/seen_valset/BrushifyCountryRoads`
@@ -160,7 +212,11 @@ on the H100. Aggregate with `bash scripts/metric.sh` on the H100 afterward.
 
 The H100 `run_eval.sh` was verified 2026-09-08: same arg set as `eval_aerovla.sh`
 (`--simulator_tool_port 30000`, `CUDA_VISIBLE_DEVICES=0`, `.venv` python) — works
-for the split as-is.
+for the split as-is. **2026-09-10**: now takes `PORT` (default 30000) + `LOG`
+(default `/tmp/split_eval.log`), writes `/tmp/aerovla_eval_<PORT>.pid` on launch,
+and traps INT/TERM/EXIT to kill the eval. **Currently `git fetch fork && git reset
+--hard fork/main` is REQUIRED on the H100 before running** (log-permission fix
+`9fa1637` + viewer fix `7a45cdb`).
 
 ---
 
