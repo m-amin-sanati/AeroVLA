@@ -732,10 +732,17 @@ if __name__ == '__main__':
         default=False,
         help='launch UE4 in a visible window (default: offscreen, no window)'
     )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help='bind address for the AirSim RPC server (default: 127.0.0.1; '
+             'use 0.0.0.0 for split eval over reverse tunnels)'
+    )
     args = parser.parse_args()
 
 
-    HOST = '0.0.0.0'
+    HOST = args.host
     PORT = int(args.port)
     CWD_DIR = Path(str(os.path.abspath(__file__))).parent.resolve()
     PROJECT_ROOT_DIR = CWD_DIR.parent
