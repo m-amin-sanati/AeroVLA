@@ -238,3 +238,6 @@ xvfb.log
 # TravelUAV is a separate upstream project (has its own .git) — vendored only
 TravelUAV/
 
+# dataset symlinks (episode runtime data on H100 — not for git)
+dataset_raw/
+
