@@ -132,12 +132,19 @@ class Viewer:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("port", nargs="?", type=int, default=30001, help="AirSim API port (scene port)")
+    ap.add_argument("--retry", type=int, default=12, help="seconds to keep retrying connect if scene not up yet")
     args = ap.parse_args()
-    try:
-        Viewer(args.port)
-    except Exception as e:
-        print(f"viewer error: {type(e).__name__}: {e}")
-        sys.exit(1)
+    deadline = time.time() + args.retry
+    while True:
+        try:
+            Viewer(args.port)
+            return  # Viewer runs its own mainloop; returns only on window close
+        except Exception as e:
+            if time.time() >= deadline:
+                print(f"viewer error: {type(e).__name__}: {e}")
+                sys.exit(1)
+            print(f"viewer: scene :{args.port} not ready yet ({type(e).__name__}); retrying ...")
+            time.sleep(2)
 
 
 if __name__ == "__main__":
