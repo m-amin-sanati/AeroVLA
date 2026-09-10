@@ -285,12 +285,21 @@ scripts/metric.sh                          # SR/OSR/NE/SPL aggregation
 data/meta/map_spawnarea_info.json          # per-map spawn areas (Brushify added)
 data/meta/object_description.json          # object descriptions for prompts
 data/uav_dataset/seen_valset_splits/BrushifyCountryRoads.json  # 123-episode split
-dataset_raw/BrushifyCountryRoads/          # symlinks -> envs/.../raw/<uuid>
+dataset_raw/BrushifyCountryRoads/          # H100: symlinks -> envs/<Map>/<uuid>; local: empty
 envs/BrushifyCountryRoads.(zip|z01|z02)    # multi-part env archive (NOT extracted locally)
 openvla-7b/                                # base model (14.7 GB) + trust-remote-code files
 checkpoints/                               # user LoRA adapter (441 MB)
 TravelUAV/                                 # upstream benchmark materials
 ```
+
+**Git layout (2026-09-10):** local + H100 both have `origin` (upstream `XuPeng23/AeroVLA`)
+and `fork` (personal `github.com/m-amin-sanati/AeroVLA`). **Fork `main` is the single
+source of truth**; local/H100 `main` are synced to it (`dda2728`). Server tool default
+binds `127.0.0.1`; pass `--host 0.0.0.0` for split eval over reverse tunnels (`--windowed`
+optional). `aerovla_wrapper_ui.py` is pristine upstream (bf16). H100-only runtime scripts
+(`scripts/{start_server,daemon_server,run_eval}*.sh/py`, `smoke_test_model.py`) are kept
+**untracked** on H100. To sync H100: local `git push fork main`, H100
+`git fetch fork && git reset --hard fork/main`.
 
 ---
 

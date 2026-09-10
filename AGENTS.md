@@ -112,6 +112,13 @@ When something becomes deprecated or is replaced:
 - **Local env status**: Brushify engine still zipped (user will extract into
   `envs/BrushifyCountryRoads/engine/`); BrushifyForestPack extracted
   (`envs/BrushifyForestPack/envs/BrushifyForestPack/` — pending move to `engine/`).
+- **Git sync (since 2026-09-10)**: both repos now track the personal fork
+  `git@github.com:m-amin-sanati/AeroVLA.git` (added as `fork` remote; `origin` stays
+  upstream `XuPeng23/AeroVLA`). Fork `main` is the single source of truth; local + H100
+  `main` are synced to it. Server tool default `HOST=127.0.0.1` (`--host 0.0.0.0` for
+  split/tunnel); `--windowed` optional; `aerovla_wrapper_ui.py` is pristine upstream.
+  To sync H100 from local commits: `git push fork main` locally, then on H100
+  `git fetch fork && git reset --hard fork/main`.
 
 ---
 

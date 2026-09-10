@@ -365,3 +365,52 @@ schema into the server resolver on both the local repo and the H100 repo.
 - User extracts `BrushifyCountryRoads` engine into `envs/BrushifyCountryRoads/engine/`
   (no space right now; `BrushifyForestPack` already extracted → move into `engine/`).
 - When a new map arrives: follow `docs/ADD_ENV_RUNBOOK.md` (now schema-aware).
+
+
+## Session 2026-09-10 — Git sync between local + H100 via personal fork
+
+**Goal**: unify the two AeroVLA repos (local + H100 VM) through a personal GitHub fork
+`https://github.com/m-amin-sanati/AeroVLA.git` (fork of upstream `XuPeng23/AeroVLA`).
+
+**What I did**
+- Inventoried both repos. Both were clones of `XuPeng23/AeroVLA` @ `e37685a` on `main`,
+  each with local modifications + untracked files, no commits ahead.
+- Local repo: added `.gitignore` rules for big/generated data (`envs/`, `openvla-7b/`,
+  `eval_results/`, `evals.zip`, `checkpoints/`, `data/others/*.json`,
+  `data/aerovla_train_dataset.json`, runtime logs, `TravelUAV/` vendored subrepo,
+  `dataset_raw/`). Committed:
+  - `4689151` env-schema + split tooling + docs + split.json
+  - `f7272e0` ignore vendored TravelUAV
+- Reconciled 2 shared files after user decision:
+  - `AirVLNSimulatorServerTool.py`: **default HOST=127.0.0.1**, added optional
+    `--host` (use `0.0.0.0` for split/tunnel eval), kept optional `--windowed` +
+    `make_env_launch_cmd()`.
+  - `aerovla_wrapper_ui.py`: reverted to **upstream pristine** (bf16, `.to(device)`,
+    no bnb 4-bit).
+  - commit `d7bfa44` (+ pushed to fork ).
+- H100 repo: added `fork` remote, discarded its tracked working-tree edits (server
+  HOST 127.0.0.1 only + no windowed; wrapper bf16 tweaks were already upstream-equal),
+  `git reset --hard fork/main` → synced to fork. Kept H100-only untracked scripts:
+  `scripts/{daemon_server.sh, run_eval.sh, run_eval_daemon.py, start_server.sh,
+  start_server_daemon.py}`, `smoke_test_model.py`. `dataset_raw/` added to ignore
+  (commit `dda2728`, pushed from local).
+- Final H100 state: `HEAD = dda2728` = fork/main, clean tracked tree, 6 untracked
+  H100-only scripts intact. H100 client uses `127.0.0.1:30000` via reverse tunnel →
+  server default bind 127.0.0.1 is correct. Verified both server+wrapper compile on H100.
+
+**Problems**
+- H100 `git push fork` prompted interactive GitHub auth (no credential helper/token on
+  H100). Workaround: H100 kept no unique content (skip its `9ca0fea` .gitignore commit),
+  so all pushes were done from local (which has cached GitHub auth).
+- `map_spawnarea_info.json` is huge (~35k lines); diffs look enormous but H100 vs fork
+  was byte-identical (0 diff lines).
+
+**Current state**
+- Fork `m-amin-sanati/AeroVLA` `main` @ `dda2728` is the single source of truth.
+  Local `main` = fork `main`. H100 `main` = fork `main` (tracked clean; untracked
+  H100-only scripts preserved).
+- Remotes: local + H100 both have `origin` (upstream) + `fork` (personal).
+
+**Next steps**
+- None critical. Future work: pull/push via `fork`. To update H100 from a new local
+  commit: `git push fork main` locally, then on H100 `git fetch fork && git reset --hard fork/main`.
