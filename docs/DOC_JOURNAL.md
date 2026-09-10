@@ -414,3 +414,44 @@ schema into the server resolver on both the local repo and the H100 repo.
 **Next steps**
 - None critical. Future work: pull/push via `fork`. To update H100 from a new local
   commit: `git push fork main` locally, then on H100 `git fetch fork && git reset --hard fork/main`.
+
+## Session 2026-09-10 (cont.) — Extracted + verified BrushifyCountryRoads engine locally
+
+**Goal**: unblock local server launch by extracting the BrushifyCountryRoads UE4
+engine into the canonical `envs/<Map>/engine/<Map>/` layout so split eval can run.
+
+**What I did**
+- Audited `envs/` current state:
+  - `BrushifyCountryRoads/`: `envs/BrushifyCountryRoads.zip` = complete standalone
+    engine build (launcher .sh + 165M binary + 2.47G pak + Engine/); `data_raws/` =
+    3 raw episode parts (.z01/.z02/.zip). Engine NOT extracted before this session.
+  - `BrushifyForestPack/`: engine already extracted but nested as
+    `envs/BrushifyForestPack/envs/BrushifyForestPack/` (wrong schema path) AND not
+    registered in `env_exec_path_dict` → not launchable by server (leaving as-is;
+    brushify eval does not need it).
+- Extracted engine per `docs/ADD_ENV_RUNBOOK.md` §1:
+  `7z x -y -o. ../envs/BrushifyCountryRoads.zip` from `envs/BrushifyCountryRoads/engine/`.
+  Result: `engine/BrushifyCountryRoads/` with launcher + binary + pak + Engine/.
+  Verified pak = 2,472,379,918 bytes (2.4G, NOT truncated).
+- **Problem**: 7z preserved non-exec perms — `.sh` and `Binaries/Linux/BrushifyCountryRoads`
+  were `-rw-rw-r--`, so `split.sh` sanity check and `resolve_env_launcher` (exec test)
+  failed.
+- **Solution**: `chmod +x BrushifyCountryRoads.sh BrushifyCountryRoads/Binaries/Linux/BrushifyCountryRoads`
+  and `chmod -R u+X BrushifyCountryRoads/Binaries`. Added the chmod step to
+  `ADD_ENV_RUNBOOK.md` §1 so future extractions don't repeat this.
+- Verified end-to-end from the server's cwd (`airsim_plugin/`): `resolve_env_launcher('BrushifyCountryRoads')`
+  → `../envs/BrushifyCountryRoads/engine/BrushifyCountryRoads/BrushifyCountryRoads.sh`,
+  `exists: True exec: True`. `split.sh` launcher sanity check passes. `bash -n split.sh` OK.
+- Server default `--root_path ../envs` matches the resolved path.
+
+**Current state**
+- `envs/BrushifyCountryRoads/engine/BrushifyCountryRoads/` extracted + executable.
+  `envs/` gitignored → no git impact. Disk: 16G→14G free after ~2.5G extraction (fine).
+- `split.sh` is now launch-ready (its line-65 sanity check passes).
+
+**Next steps**
+- Run the actual split eval when the user wants: local `bash scripts/split.sh [PORT] [--windowed]`,
+  then H100 `bash scripts/run_eval.sh`. (This session stopped before launching the server,
+  to get user go-ahead.)
+- Optionally reorganize ForestPack engine to `engine/` schema + register in
+  `env_exec_path_dict` if a ForestPack eval is ever needed (not now).

@@ -109,9 +109,14 @@ When something becomes deprecated or is replaced:
   `data_raws/` (episode archives) and `engine/<Map>/` (extracted UE4, launcher
   `engine/<Map>/<Map>.sh`). Server resolves via `resolve_env_launcher`
   (`AirVLNSimulatorServerTool.py`), uses `engine_dir='engine'` in `env_exec_path_dict`.
-- **Local env status**: Brushify engine still zipped (user will extract into
-  `envs/BrushifyCountryRoads/engine/`); BrushifyForestPack extracted
-  (`envs/BrushifyForestPack/envs/BrushifyForestPack/` — pending move to `engine/`).
+- **Local env status**: **BrushifyCountryRoads engine EXTRACTED + verified** at
+  `envs/BrushifyCountryRoads/engine/BrushifyCountryRoads/` (launcher `.sh` + 165M
+  binary + 2.47G pak, chmod +x applied); server resolves it (exists+exec True).
+  BrushifyForestPack extracted but nested at
+  `envs/BrushifyForestPack/envs/BrushifyForestPack/` (pending move to `engine/`;
+  not registered in `env_exec_path_dict`, not needed for brushify eval).
+- **Split eval is launch-ready**: local `bash scripts/split.sh [PORT] [--windowed]`
+  sanity check passes; then H100 `bash scripts/run_eval.sh`.
 - **Git sync (since 2026-09-10)**: both repos now track the personal fork
   `git@github.com:m-amin-sanati/AeroVLA.git` (added as `fork` remote; `origin` stays
   upstream `XuPeng23/AeroVLA`). Fork `main` is the single source of truth; local + H100

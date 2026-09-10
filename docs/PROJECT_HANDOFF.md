@@ -166,7 +166,7 @@ fix 4–5 s `simGetImages` latency.
 
 | Item | State |
 |------|-------|
-| `envs/BrushifyCountryRoads/` (env folder, **new `engine/`+`data_raws/` schema since 2026-09-10**) | Locally contains `data_raws/` (`.zip`+`.z01`+`.z02` archives) and `envs/` → reorganized to put **engine** under `envs/<Map>/engine/<Map>/` (launcher = `.../engine/BrushifyCountryRoads/BrushifyCountryRoads.sh`). **NOT yet extracted to the new `engine/` layout** (user will extract; no space now). `BrushifyForestPack` IS extracted at `envs/BrushifyForestPack/envs/BrushifyForestPack/` (to be moved into `engine/` per schema). |
+| `envs/BrushifyCountryRoads/` (env folder, **new `engine/`+`data_raws/` schema since 2026-09-10**) | Locally contains `data_raws/` (`.zip`+`.z01`+`.z02` archives) and `envs/` → reorganized to put **engine** under `envs/<Map>/engine/<Map>/` (launcher = `.../engine/BrushifyCountryRoads/BrushifyCountryRoads.sh`). **EXTRACTED 2026-09-10** into `engine/BrushifyCountryRoads/` (launcher + 165M binary + 2.47G pak + Engine/); `.sh` + binary `chmod +x`'d; server resolver verified (exists+exec). `BrushifyForestPack` IS extracted at `envs/BrushifyForestPack/envs/BrushifyForestPack/` (to be moved into `engine/` per schema — not registered, not needed for brushify eval). |
 | `envs/BrushifyCountryRoads.zip` + `.z01` + `.z02` | **Archive parts intact** under `envs/BrushifyCountryRoads/` (+ nested copies). `.zip` alone = complete env; `.z01` = raw episode data (contains bad-UUID `2cd3b36c...`), `.z02` = empty. Do NOT let 7z auto-merge `.z0x` when extracting — move them aside into `data_raws/`. |
 | `dataset_raw/BrushifyCountryRoads/` symlinks | **On H100** point to `envs/BrushifyCountryRoads/<uuid>/` (valid, 123 uuids). **Locally** they are stale/broken symlinks → local `raw/` (not used; episodes live on H100). If ever needed locally, extract `.z01` alone. |
 | `openvla-7b/` base weights | **Present** (~14.7 GB, 3 safetensors shards + trust-remote-code `.py` files). |
@@ -175,15 +175,22 @@ fix 4–5 s `simGetImages` latency.
 | Generated `merged_data.json` / `mark.json` | On H100 under the extracted raw tree (`merged_data.json` beside `mark.json` — already generated there). |
 | map_spawnarea_info / server mapping / eval script | **Present** (modified files above). |
 | `eval_results/` | **DONE — synced locally (2026-09-09).** `eval_results/checkpoints/seen_valset/BrushifyCountryRoads/` = 123 episode dirs (50 `success_`, 73 plain → SR ≈ 40.65%). Each has `log/`, `ori_info.json`, `object_description.json`, camera dirs. No CSVs (metric.sh never ran). **2026-09-09 (cont.): the H100 copy of these 123 was moved to `BrushifyCountryRoads.bak_20260909_priorCPU123` and a fresh 123-ep split re-run is ACTIVE over the tunnel** (see "Split full-run state" row). |
-| Split tooling | `scripts/split.sh` (**python-env FIXED 2026-09-09**: uses `aero_vla` python via `$SERVER_PYTHON` + deps check), `HOST=0.0.0.0` applied to `AirVLNSimulatorServerTool.py:696`. **Smoke test VERIFIED end-to-end** (local server `0.0.0.0:30000`, reverse tunnel up, H100→`127.0.0.1:30000` = OK). |
+| Split tooling | `scripts/split.sh` (**2026-09-09 FIXED**: uses `aero_vla` python via `$SERVER_PYTHON` + deps check). Server tool canonical (2026-09-10): default `HOST=127.0.0.1`, optional `--host 0.0.0.0`, `--windowed` optional. Local server `0.0.0.0:30000` for split, reverse tunnel up, H100→`127.0.0.1:30000` = OK (verified 2026-09-09). |
 | Split tooling MSGPACK | **2026-09-09: H100 venv must have `msgpack==1.1.2`** (was 1.2.2 → msgpack-RPC framing breaks; server crashes `transport/tcp.py:27` on first real RPC; client silently dies). Fixed + verified via real RPC `ping`. |
 | Split full-run state | **2026-09-09: FULL 123-ep SPLIT RE-RUN ACTIVE + VERIFIED WRITING RESULTS** to fresh `eval_results/checkpoints/seen_valset/BrushifyCountryRoads/` (ubuntu-owned). Prior 123 CPU results moved to `BrushifyCountryRoads.bak_20260909_priorCPU123`. At last check **10/123** done (1 success, 3 oracle, rest plain), client alive, ~5 h projected. |
 
-**Implication for local env use:** the local UE4 server now resolves the launcher via
-`envs/<Map>/engine/<Map>/<Map>.sh`. Brushify must be unpacked into that layout before
-`split.sh --windowed` will pass its sanity check. Do **not** merge `.z01`/`.z02`
-into it (corrupt/empty, separate contents). The H100 client needs only the model weights
-and the eval script, not `raw/`.
+**Implication for local env use:** the local UE4 server resolves the launcher via
+`envs/<Map>/engine/<Map>/<Map>.sh`. Brushify **is now extracted** into that layout and
+its `.sh`/binary are `chmod +x`'d, so `split.sh` passes its sanity check. Do **not** merge
+`.z01`/`.z02` into it (corrupt/empty, separate contents). The H100 client needs only the
+model weights and the eval script, not `raw/`.
+
+**Git sync note (2026-09-10):** local + H100 both track personal fork
+`github.com/m-amin-sanati/AeroVLA` (`fork` remote; `origin` = upstream). Fork `main` is
+the single source of truth; both `main`s synced at `d382500`. Server tool canonical:
+default `HOST=127.0.0.1` (`--host 0.0.0.0` for split/tunnel), `--windowed` optional,
+`aerovla_wrapper_ui.py` pristine upstream (bf16). H100-only scripts kept untracked.
+To sync H100: local `git push fork main`, H100 `git fetch fork && git reset --hard fork/main`.
 
 ---
 

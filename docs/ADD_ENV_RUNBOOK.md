@@ -74,6 +74,8 @@ mv <Map>.z01 <Map>.z02 data_raws/ 2>/dev/null || true
 # extract the ENGINE zip ALONE into engine/
 mkdir -p engine && cd engine
 7z x -y -o. ../<Map>.zip          # extract .zip ALONE
+# 7z preserves archive perms; UE4 ships the .sh + binary without +x -> fix:
+chmod +x <Map>/<Map>.sh <Map>/<Map>/Binaries/Linux/<Map>
 cd ..
 ```
 
