@@ -268,6 +268,11 @@ env_exec_path_dict = {
         'exec_path': 'BrushifyCountryRoads',
         'engine_dir': 'engine',
     },
+    "BrushifyForestPack": {
+        'bash_name': 'BrushifyForestPack',
+        'exec_path': 'BrushifyForestPack',
+        'engine_dir': 'engine',
+    },
     "Carla_Town01": {
         'bash_name': 'CarlaUE4',
         'exec_path': './carla_town_envs/Town01/LinuxNoEditor',
