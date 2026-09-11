@@ -14,7 +14,11 @@
 #   3. If any are missing, runs the TravelUAV generator over envs/data_raws
 #      with --map_list <map> to synthesize them (as the current user; the
 #      env tree is typically root-owned, so run this as root / owner).
-#   4. Repoints dataset_raw/<map> -> envs/data_raws/<map> so the eval's
+#   4. Regenerates the <map> spawn-area rows in data/meta/map_spawnarea_info.json
+#      from the episodes' mark.json (one 18-field row per distinct
+#      (object_name, target.position)); the model client snaps each episode to
+#      the nearest row for spawning live objects.
+#   5. Repoints dataset_raw/<map> -> envs/data_raws/<map> so the eval's
 #      --dataset_path ./dataset_raw/ resolves to the episodes.
 #
 # Usage (H100):
@@ -73,6 +77,35 @@ if [ "${EP_STILL_MISSING}" -gt 0 ]; then
   echo "WARNING: ${EP_STILL_MISSING} episode(s) could not be merged (check log/ + cameras)."
 fi
 
+echo
+echo "==> Regenerating spawn-area rows for ${MAP} from episode mark.json ..."
+SPAWN_JSON="${ROOT}/data/meta/map_spawnarea_info.json"
+[ -f "${SPAWN_JSON}" ] || { echo "FATAL: ${SPAWN_JSON} missing"; exit 1; }
+"${PYTHON}" - "${SRC_DIR}" "${SPAWN_JSON}" "${MAP}" <<'PY'
+import json, os, sys
+src_dir, spawn_json, map_name = sys.argv[1], sys.argv[2], sys.argv[3]
+rows, seen = [], set()
+count = 0
+for m in sorted(os.listdir(src_dir)):
+    ep = os.path.join(src_dir, m)
+    if not os.path.isdir(ep) or not os.path.isfile(os.path.join(ep, 'mark.json')):
+        continue
+    count += 1
+    d = json.load(open(os.path.join(ep, 'mark.json')))
+    key = (d['object_name'], tuple(d['target']['position']))
+    if key in seen:
+        continue
+    seen.add(key)
+    x, y, z = d['target']['position']
+    rows.append([x-1, y-1, z-0.5, x+1, y+1, z+0.5, 0, 0, 0,
+                 x, y, z, 1.0, 0.0, 0.0, 0.0, d['object_name'], 1.0])
+sp = json.load(open(spawn_json))
+sp[map_name] = rows
+json.dump(sp, open(spawn_json, 'w'), indent=2)
+print(f"episodes scanned: {count}; spawn-area rows: {len(rows)}; written to {spawn_json}")
+PY
+
+echo
 echo "==> Pointing dataset_raw/${MAP} at the episode source ..."
 mkdir -p "${ROOT}/dataset_raw"
 rm -rf "${DST_DIR}"                    # remove stale dir/symlink
