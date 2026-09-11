@@ -26,6 +26,10 @@ VENV="$PROJECT_ROOT/.venv/bin/python"
 PORT="${1:-30000}"
 LOG="${2:-/tmp/split_eval.log}"
 PIDFILE="/tmp/aerovla_eval_${PORT}.pid"
+# Map / env to evaluate; override with:  AEROVLA_MAP=BrushifyForestPack bash scripts/run_eval.sh
+MAP="${AEROVLA_MAP:-BrushifyCountryRoads}"
+EVAL_SAVE_DIR="./eval_results/checkpoints/seen_valset/${MAP}"
+EVAL_JSON="./data/uav_dataset/seen_valset_splits/${MAP}.json"
 
 chmod -R a+rX "$PROJECT_ROOT" 2>/dev/null || true
 cd "$PROJECT_ROOT"
@@ -67,9 +71,9 @@ su -s /bin/bash ubuntu -c "
     --run_type eval --name AerialVLA_Eval --gpu_id 0 \
     --simulator_tool_port $PORT --DDP_MASTER_PORT 80005 --batchSize 1 --maxWaypoints 200 \
     --dataset_path ./dataset_raw/ \
-    --eval_save_path ./eval_results/checkpoints/seen_valset/BrushifyCountryRoads \
+    --eval_save_path ${EVAL_SAVE_DIR} \
     --model_path ./checkpoints \
-    --eval_json_path ./data/uav_dataset/seen_valset_splits/BrushifyCountryRoads.json \
+    --eval_json_path ${EVAL_JSON} \
     --map_spawn_area_json_path ./data/meta/map_spawnarea_info.json \
     --object_name_json_path ./data/meta/object_description.json \
     > $LOG 2>&1 & echo \$! > $PIDFILE
