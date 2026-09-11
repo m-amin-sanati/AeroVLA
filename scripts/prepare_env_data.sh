@@ -190,7 +190,7 @@ ln -sfn "${SRC_DIR}" "${DST_DIR}"
 
 echo
 echo "Done. Verify sample eval path exists:"
-SAMPLE=$(find "${DST_DIR}" -mindepth 1 -maxdepth 1 -type d | head -1)
+SAMPLE=$(find -L "${DST_DIR}" -mindepth 1 -maxdepth 1 -type d | head -1)
 if [ -n "${SAMPLE}" ] && [ -f "${SAMPLE}/merged_data.json" ] && [ -f "${SAMPLE}/mark.json" ]; then
   echo "  OK: ${SAMPLE}/merged_data.json"
   echo "  OK: ${SAMPLE}/mark.json"
