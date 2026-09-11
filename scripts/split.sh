@@ -56,8 +56,14 @@ for a in "$@"; do
   esac
 done
 
-LOCAL_PORT="${POS_ARGS[0]:-30000}"
-MAP="${POS_ARGS[1]:-BrushifyCountryRoads}"
+LOCAL_PORT=30000
+MAP=BrushifyCountryRoads
+for p in "${POS_ARGS[@]}"; do
+  case "$p" in
+    ''|*[!0-9]*) MAP="$p" ;;            # non-numeric -> map name
+    *)            LOCAL_PORT="$p" ;;    # numeric -> server port
+  esac
+done
 AIRSIM_PORTS_MAX=$((LOCAL_PORT + 16))   # 30001..30016 for scenes
 
 # Server deps live in the local aero_vla conda env (msgpackrpc/tornado/airsim).
