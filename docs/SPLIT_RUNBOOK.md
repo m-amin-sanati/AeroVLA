@@ -210,6 +210,13 @@ bash /path/to/AeroVLA/scripts/split.sh
 Results still write to `eval_results/checkpoints/seen_valset/BrushifyCountryRoads`
 on the H100. Aggregate with `bash scripts/metric.sh` on the H100 afterward.
 
+**2026-09-11 (BrushifyForestPack):** to eval ForestPack instead, launch with
+`AEROVLA_MAP=BrushifyForestPack bash scripts/run_eval.sh` on the H100 (client
+auto-launch in `split.sh` step 5 passes `AEROVLA_MAP=$MAP`), which targets
+`eval_results/checkpoints/seen_valset/BrushifyForestPack/` and the prep-created
+split `data/uav_dataset/seen_valset_splits/BrushifyForestPack.json` (444 eps).
+Default remains CountryRoads when `AEROVLA_MAP` is unset.
+
 The H100 `run_eval.sh` was verified 2026-09-08: same arg set as `eval_aerovla.sh`
 (`--simulator_tool_port 30000`, `CUDA_VISIBLE_DEVICES=0`, `.venv` python) — works
 for the split as-is. **2026-09-10**: now takes `PORT` (default 30000) + `LOG`

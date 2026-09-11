@@ -20,10 +20,13 @@
 # No manual cleanup needed.
 #
 # Usage:
-#   bash scripts/split.sh [LOCAL_SERVER_PORT] [--windowed] [--cameras] [--no-eval]
+#   bash scripts/split.sh [LOCAL_SERVER_PORT] [MAP] [--windowed] [--cameras] [--no-eval]
 #
 #   LOCAL_SERVER_PORT    port for the AeroVLA server (default 30000); AirSim
 #                        API ports are LOCAL_SERVER_PORT+1 .. +16.
+#   MAP                  env/map to evaluate (default BrushifyCountryRoads;
+#                        e.g. BrushifyForestPack). Passed to the H100 eval as
+#                        AEROVLA_MAP so run_eval.sh targets the right env.
 #   --windowed           launch UE4 in a visible window instead of offscreen,
 #                        so you can SEE the scene live.
 #   --cameras            ALSO show the live drone camera views (front/left/
@@ -54,6 +57,7 @@ for a in "$@"; do
 done
 
 LOCAL_PORT="${POS_ARGS[0]:-30000}"
+MAP="${POS_ARGS[1]:-BrushifyCountryRoads}"
 AIRSIM_PORTS_MAX=$((LOCAL_PORT + 16))   # 30001..30016 for scenes
 
 # Server deps live in the local aero_vla conda env (msgpackrpc/tornado/airsim).
@@ -74,6 +78,7 @@ ROOT="$(pwd)"
 echo "=============================================="
 echo "AeroVLA split launcher"
 echo "  LOCAL port         : ${LOCAL_PORT} (+1..+16 AirSim API)"
+echo "  MAP                : ${MAP}"
 echo "  H100 host          : ${H100}"
 echo "  Project            : ${ROOT}"
 echo "  UE4 mode           : $([ ${WINDOWED} -eq 1 ] && echo 'WINDOWED (visible)' || echo 'offscreen')"
@@ -84,8 +89,8 @@ echo "=============================================="
 # --------------------------------------------------------------------------
 # 0. Sanity checks
 # --------------------------------------------------------------------------
-[ -x "${ROOT}/envs/BrushifyCountryRoads/engine/BrushifyCountryRoads/BrushifyCountryRoads.sh" ] \
-  || { echo "FATAL: env launcher missing - did you extract envs/ into the new engine/ layout?"; exit 1; }
+[ -x "${ROOT}/envs/${MAP}/engine/${MAP}/${MAP}.sh" ] \
+  || { echo "FATAL: env launcher missing for ${MAP} - did you extract envs/ into the new engine/ layout?"; exit 1; }
 command -v ssh >/dev/null || { echo "FATAL: ssh not found"; exit 1; }
 command -v python >/dev/null || true
 
@@ -264,7 +269,7 @@ if [ ${NO_EVAL} -eq 0 ]; then
   # NOTE: run_eval.sh runs REMOTELY and writes /tmp/aerovla_eval_<PORT>.pid on
   # the H100. We verify it exists via ssh. (It is NOT a local file.)
   timeout 40 ssh -o ConnectTimeout=15 -o LogLevel=ERROR "${H100}" \
-    "bash /workspaces/AeroVLA/scripts/run_eval.sh ${LOCAL_PORT} /tmp/split_eval.log" \
+    "cd /workspaces/AeroVLA && AEROVLA_MAP=${MAP} bash scripts/run_eval.sh ${LOCAL_PORT} /tmp/split_eval.log" \
     > /tmp/aerovla_eval_launch.log 2>&1 || true
   REMOTE_PID="$(timeout 15 ssh -o ConnectTimeout=10 -o LogLevel=ERROR "${H100}" \
     "cat /tmp/aerovla_eval_${LOCAL_PORT}.pid 2>/dev/null" 2>/dev/null | grep -E '^[0-9]+$' | head -1 || true)"
@@ -277,7 +282,7 @@ if [ ${NO_EVAL} -eq 0 ]; then
   fi
 else
   echo "==> (--no-eval) skipping H100 eval client. Start it later manually:"
-  echo "    ssh ${H100} 'cd /workspaces/AeroVLA && bash scripts/run_eval.sh ${LOCAL_PORT}'"
+  echo "    ssh ${H100} 'cd /workspaces/AeroVLA && AEROVLA_MAP=${MAP} bash scripts/run_eval.sh ${LOCAL_PORT}'"
 fi
 
 cat <<EOF

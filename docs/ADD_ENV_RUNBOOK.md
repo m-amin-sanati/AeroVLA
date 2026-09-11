@@ -198,7 +198,14 @@ Notes:
 
 ---
 
-## 4. Put episode data on the H100 → `envs/<Map>/<uuid>/` + symlinks
+## 4. Prepare episode data on the H100 → one-command `scripts/prepare_env_data.sh`
+
+> **NOTE (2026-09-11):** all of the old manual §3/§4/§5 steps are now **folded into
+> `scripts/prepare_env_data.sh`**, parameterized by `[MAP] [CATEGORY]`. Run it
+> once on H100 after the raw episode tree is in place and it does everything:
+> generate `merged_data.json` (missing only), regenerate the `<Map>` spawn-area
+> rows, check `object_description.json` coverage, create the eval split json, and
+> point `dataset_raw/<Map>` at the source. **Do not hand-craft these files.**
 
 The model client reads `--dataset_path` (default `./dataset_raw/`) and for each
 entry `{"json": "<Map>/<uuid>/merged_data.json", "frame": 1}`:
@@ -207,32 +214,56 @@ entry `{"json": "<Map>/<uuid>/merged_data.json", "frame": 1}`:
   `mark.json` **beside it** (lines 127-152).
 - **skips any episode already present in `eval_save_path`** (fresh/empty dir required).
 
-On H100:
+Raw episode dirs land under `envs/data_raws/<Map>/<uuid>/`, per uuid:
+`mark.json` + `merged_data.json` + `object_description.json`, and 11 dirs:
+`log/`, `downcamera/`, `downcamera_depth/`, `frontcamera/`,
+`frontcamera_depth/`, `leftcamera/`, `leftcamera_depth/`, `rearcamera/`,
+`rearcamera_depth/`, `rightcamera/`, `rightcamera_depth/`.
+
+### 4a. The one-command prep (all steps)
+
 ```bash
 ssh main.copper.sanati-emp.coder
 cd /workspaces/AeroVLA
-
-# 1. raw episode dirs land under envs/<Map>/<uuid>/ (mirrors Brushify)
-#    per uuid: mark.json + merged_data.json + object_description.json,
-#    11 dirs: log/, downcamera/, downcamera_depth/, frontcamera/, frontcamera_depth/,
-#    leftcamera/, leftcamera_depth/, rearcamera/, rearcamera_depth/,
-#    rightcamera/, rightcamera_depth/
-
-# 2. dataset_raw/<Map>/ symlinks -> envs/<Map>/<uuid>
-mkdir -p dataset_raw/<Map>
-for u in envs/<Map>/*/; do
-  [ -e "${u}merged_data.json" ] || continue
-  ln -sfn "/workspaces/AeroVLA/envs/<Map>/$(basename $u)" "dataset_raw/<Map>/$(basename $u)"
-done
-ls dataset_raw/<Map> | wc -l   # == episode count (123 for Brushify)
+bash scripts/prepare_env_data.sh <Map> [CATEGORY=seen_valset] [PYTHON]
 ```
 
-Each `envs/<Map>/<uuid>/merged_data.json` is produced by
-`TravelUAV/Model/LLaMA-UAV/tools/generate_merged_json.py` (upstream tool,
-`--root_dir` + `--map_list`; outputs keys `trajectory, trajectory_raw,
-trajectory_raw_detailed, image_feature_path, index, length, conversations`).
-Crashes on bad/corrupt episodes (Brushify: `2cd3b36c-...`) → exclude those uuids
-from the split.
+It runs (idempotent, in order):
+1. **merged_data.json** — counts/lists episodes missing it; runs the TravelUAV
+   generator `TravelUAV/Model/LLaMA-UAV/tools/generate_merged_json.py`
+   (`--root_dir envs/data_raws --map_list <Map>`) on the missing ones only.
+   Corrupt episodes stay unmerged and are **excluded** from the split (Brushify
+   was `2cd3b36c-...`; ForestPack had 2).
+2. **spawn-area rows** — regenerates `<Map>` in
+   `data/meta/map_spawnarea_info.json` from the episodes' `mark.json`
+   (one 18-field row per distinct `(object_name, target.position)`; see §3
+   format table). Overwrites the whole `<Map>` key → commits reflect new rows.
+3. **object_description coverage** — verifies every asset used (with `AA`
+   stripped, matching `closeloop_util.py`) exists in
+   `data/meta/object_description.json`; warns per-episode on holes.
+4. **split json** — writes `data/uav_dataset/<CATEGORY>_splits/<Map>.json` with
+   one `{"json": "<Map>/<uuid>/merged_data.json", "frame": 1}` entry per valid
+   episode (has both `merged_data.json` AND `mark.json`): 444 for ForestPack.
+5. **dataset_raw symlink** — `ln -sfn envs/data_raws/<Map> dataset_raw/<Map>`
+   (a single symlink, not per-uuid links) so `--dataset_path ./dataset_raw/`
+   resolves. The final sample-check uses `find -L` to follow the symlink.
+6. Prints "Next:" git-add lines for the two regenerated data files, then
+   `AEROVLA_MAP=<Map> bash scripts/run_eval.sh`.
+
+Expected output markers: `episodes total: 446, missing: 2`,
+`spawn-area rows: 130; written to ...`, `assets used (AA-stripped): 45; covered:
+45; missing: 0`, `episodes in split: 444; written to ...`, and a sample
+`merged_data.json` + `mark.json` verify line.
+
+Each `merged_data.json` outputs keys `trajectory, trajectory_raw,
+trajectory_raw_detailed, image_feature_path, index, length, conversations`.
+Crashes on bad/corrupt episodes → those uuids are automatically excluded.
+
+After the prep, commit the two data files (spawn + split) from the **local** box
+pulling from H100 (H100 `git push` requires browser auth) — or leave them
+uncommitted locally and push once the H100's copy is pulled; see
+`docs/PROJECT_HANDOFF.md` git-sync note. Then the split json must exist on both
+sides.
 
 ### 4b. Optional: preprocess features (training only — NOT needed for eval)
 `TravelUAV/Model/LLaMA-UAV/tools/preprocess_image2tensor.py` writes the
@@ -241,36 +272,23 @@ closed-loop eval uses live AirSim images instead, so you can skip it.
 
 ---
 
-## 5. Create the eval split json → `data/uav_dataset/<CATEGORY>_splits/<Map>.json`
+## 5. Eval split json (generated by §4a step 4)
 
 The eval runner reads `--eval_json_path`. Brushify's split is
-`data/uav_dataset/seen_valset_splits/BrushifyCountryRoads.json`, 123 entries,
-one per episode, **sorted** paths, all `"frame": 1`:
+`data/uav_dataset/seen_valset_splits/BrushifyCountryRoads.json`, 123 entries;
+ForestPack's is `seen_valset_splits/BrushifyForestPack.json`, **444** entries
+(2 corrupt excluded), one per episode, **sorted** paths, all `"frame": 1`:
 
 ```json
 [
-  {"json": "BrushifyCountryRoads/0008c004-9c02-40d3-928f-b7228c17a39d/merged_data.json", "frame": 1},
+  {"json": "BrushifyForestPack/0081dd00-1b48-4fca-8d31-310da2db257f/merged_data.json", "frame": 1},
   ...
 ]
 ```
 
-No split-generator exists in the repo tools — the 123-episode split was crafted
-manually: list the valid uuids (exclude ones with bad merged_data), sort, and
-emit the entries. Template:
+It is produced automatically by `prepare_env_data.sh` (step 4, §4a) — you do not
+need to build it by hand.
 
-```bash
-cd /workspaces/AeroVLA   # H100
-mkdir -p data/uav_dataset/seen_valset_splits
-python3 - <<'PY'
-import json, os, glob
-uuids = sorted(b for b in os.listdir('envs/<Map>')
-               if os.path.isfile(f'envs/<Map>/{b}/merged_data.json'))
-split = [{"json": f"<Map>/{u}/merged_data.json", "frame": 1} for u in uuids]
-with open(f'data/uav_dataset/seen_valset_splits/<Map>.json', 'w') as f:
-    json.dump(split, f, indent=2)
-print(len(split), 'episodes')
-PY
-```
 
 `eval` also reads `--object_name_json_path data/meta/object_description.json`
 (a **list** of `{object_name, object_desc}`). If `<Map>` uses **new asset names**

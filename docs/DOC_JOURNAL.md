@@ -648,3 +648,44 @@ User asked to stop the eval process.
   `scripts/metric.sh` when desired.
 - Next launch uses `SpringArmChase` view (commit `b59fc25`), and will resume
   skipping already-evaluated episodes.
+
+---
+
+## Session 2026-09-11 — Prep BrushifyForestPack end-to-end (session 1)
+
+### Goal
+Prepare the whole BrushifyForestPack env for eval: fold ALL prep steps into one
+parameterized `scripts/prepare_env_data.sh [MAP] [CATEGORY]` so any future env has
+a one-command prep.
+
+### What I did
+- Verified local ForestPack engine at canonical `envs/BrushifyForestPack/engine/
+  BrushifyForestPack/` (launcher `.sh` + 158M binary + 2.79G pak); `chmod +x` both.
+- Registered `BrushifyForestPack` in `env_exec_path_dict`
+  (`airsim_plugin/AirVLNSimulatorServerTool.py`), commit `61d4283`.
+- Parameterized `scripts/run_eval.sh` with `AEROVLA_MAP` (commit `6412237`).
+- **Rewrote `scripts/prepare_env_data.sh`** to a 5-step parameterized pipeline:
+  1. merged_data.json generation (missing only), 2. spawn-area rows regeneration
+  from mark.json, 3. object_description coverage check, 4. split-json creation
+  (valid eps only), 5. dataset_raw symlink + `find -L` sample verify.
+  Commits: `80b4bc9` (spawn step) → `7a6399d` (full pipeline) → `df2a4ce`
+  (fix `find -L`). Args `[MAP] [CATEGORY=seen_valset] [PYTHON]`.
+- H100: synced fork; ran the full prep; 444/446 valid episodes in split (2 corrupt
+  excluded), 130 spawn rows, object-desc coverage 45/45.
+- Data files (spawn + split) committed locally as `a0759ef` and pushed to fork
+  (H100 git push needs browser auth → pull via base64-over-ssh, verify md5, commit
+  locally). Both repos now on `a0759ef`, clean.
+
+### Problems
+- `find -type d` does NOT descend through the `dataset_raw/<Map>` symlink →
+  false "no valid episode found" WARNING. **Solution:** use `find -L` in the
+  sample check (verified in isolation + on H100).
+- H100 `git push fork main` fails (coder needs browser auth:
+  `Open the following URL to authenticate with Git`). **Solution (git-sync):
+  commit+publish data/script changes from the LOCAL box; H100 stays read-only for
+  pushes and does `git reset --hard fork/main`.**
+
+### Current state / next steps
+- Prep complete & verified on both boxes. **Next: launch eval**
+  (local `bash scripts/split.sh --windowed`; H100 `AEROVLA_MAP=BrushifyForestPack
+  bash scripts/run_eval.sh`; 444 eps). See runbook §5.5 for chase-cam view.
