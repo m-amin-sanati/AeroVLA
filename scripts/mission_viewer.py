@@ -26,7 +26,9 @@ import argparse
 import json
 import math
 import os
+import queue
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -168,6 +170,8 @@ class MissionViewer:
         self.manual = False
         self.beacon_time = 0
         self.target = None
+        self._target_q = queue.Queue()
+        self._fetching = False
         self.client = airsim.MultirotorClient(ip="127.0.0.1", port=port, timeout_value=10)
         self.client.confirmConnection()
         self.pool = WorkerPool(port)
@@ -248,14 +252,32 @@ class MissionViewer:
         )
 
     # ---- target beacon polling ----
+    # The beacon fetch may do a slow synchronous `ssh cat` to the H100. It must
+    # NEVER run on the tkinter main thread (that froze the whole UI ~6s every 2s).
+    # We fetch on a worker thread, deliver the result through a thread-safe queue,
+    # and apply it on the main thread inside _schedule().
     def _pump_target(self):
-        if time.time() - self.beacon_time > 2.0:
-            self.beacon_time = time.time()
-            t = load_target()
-            if t:
-                self.target = t
-                self._draw_target_label()
+        if not getattr(self, "_fetching", False):
+            self._fetching = True
+            threading.Thread(target=self._poll_target, daemon=True).start()
         self.root.after(2000, self._pump_target)
+
+    def _poll_target(self):
+        try:
+            t = load_target()
+        finally:
+            self._fetching = False
+        if t:
+            self._target_q.put(t)
+
+    def _drain_target(self):
+        while True:
+            try:
+                t = self._target_q.get_nowait()
+            except Exception:
+                break
+            self.target = t
+            self._draw_target_label()
 
     def _draw_target_label(self):
         t = self.target or {}
@@ -284,6 +306,7 @@ class MissionViewer:
     # ---- main loop ----
     def _schedule(self):
         try:
+            self._drain_target()
             if self.manual:
                 self._apply_manual()
             self._frame()

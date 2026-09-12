@@ -1274,3 +1274,51 @@ rendering bugs surfaced once it connected to a real scene + beacon.
 - Test MANUAL takeover (M) with the live viewer after an episode boundary.
 - If a Debugger later re-opens scenes: viewer is independent read-only clients,
   it reconnects via WorkerPool auto-recover.
+
+---
+
+## Session 2026-09-12 (cont.) — Camera "freeze-then-jump" FIX + MANUAL mode verified
+
+### Goal
+- User reported cameras "update about after 1 sec then freeze then update" even
+  after views rendered.
+- Verify MANUAL takeover (M) works against the live ForestPack split eval.
+
+### What I did
+- **Diagnosed the freeze root cause**: `_pump_target` → `load_target()` falls back
+  to a **synchronous `ssh cat` to the H100** when the local beacon
+  `/tmp/aerovla_target.json` is missing (it has never existed locally). Measured
+  3 consecutive SSH calls at **6.06s each**. Since `_pump_target` is a `root.after`
+  callback running **on the tkinter main thread**, every 2s the whole UI blocked
+  ~6s on SSH → exactly "freeze ~1-6s then jump".
+- **Fix (`scripts/mission_viewer.py`)**: moved beacon fetching off the main thread —
+  `_pump_target` (main thread, every 2s) spawns a daemon thread `_poll_target` that
+  runs `load_target()` (the slow ssh) and puts the result in a `queue.Queue`;
+  `_drain_target()` is called in `_schedule()` (main thread) to apply + redraw.
+  Added `import threading`, `import queue`, `self._target_q`, `self._fetching` guard.
+- **Verified fix live**: telemetry strip changed 40/40 scans (UI fully alive);
+  FRONT repaints every ~0.75s with max no-change gap 1.27s (was 6s). Log 0 errors.
+- **Verified MANUAL (H100 side) live**: wrote `{"manual": true}` to
+  `/tmp/aerovla_manual.json` on H100 → eval **froze at Step 114 for 40s (0 new
+  steps)**; cleared to `{"manual": false}` → eval resumed (Step 116 + drone moved).
+  The `_manual_takeover_active()` block (eval_aerovla.py:92) works.
+
+### Problems / solutions
+- 6s UI freeze → beacon ssh off the main thread via queue + `_drain_target` in loop.
+- H100 ssh flaky (coder agent) → use a single persistent ssh session for repeated
+  sampling; robust flag-write with SET_OK retry loop.
+- No xdotool/xte/xvkbd on local → cannot inject the M key into the tk window; the
+  M→flag path is code-verified (writes identical format) and the H100 pause/resume
+  is live-verified; the actual keypress-to-flag is the only untested link.
+
+### Current state (verified)
+- Viewer pid 2450609 ALIVE, window at +1894+167 (moved again on relaunch),
+  1200x800, 0 log errors, live views.
+- H100 eval running: Step ~116, Completed 14/438, manual flag now `false`, eval
+  back to normal.
+- Git: local main `8594601` + uncommitted mission_viewer fix.
+
+### Next steps
+- Commit + push the SSH-freeze fix + docs.
+- If a real M-keypress test is wanted: run a key-injection (install xdotool with
+  sudo, or use a minimal XTest binary) against the viewer; optional.
