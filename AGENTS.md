@@ -153,16 +153,21 @@ When something becomes deprecated or is replaced:
   `_manual_takeover_active()` blocks before `makeActions` until clear). TARGET
   polls `/tmp/aerovla_target.json` (written per mission by
   `EvalBatchState._write_target_beacon` on H100).
-  Key traps (fixed 2026-09-12, `8dcf696`+`d6a56cf`): **`mainloop()` must be
+  Key traps (fixed 2026-09-12, `8dcf696`+`d6a56cf`+`ee54608`): **`mainloop()` must be
   called by `main()` AFTER `_start()`** — if `__init__` calls it, the frame loop
   never runs and ALL views stay placeholders (the "no view" bug). `WorkerPool`
   must NOT permanently fault workers on transient RPC errors (was killing all
   views silently) — it now soft-fails + auto-reconnects at >=25 consecutive
   fails. Beacon fields `object_desc`/`asset_name`/`instruction` are **lists**
   (unwrap `[0]`), and the label shows the full instruction (strip `<image>`,
-  `wraplength=1000`). Window is 1200x800 but **the WM may move it between
+  `wraplength=1000`). **The beacon ssh fallback must NEVER run on the tkinter
+  main thread**: `load_target()` does a synchronous `ssh cat` H100 (~6s) when the
+  local `/tmp/aerovla_target.json` is missing, and doing that in `_pump_target`
+  froze the whole window ~6s every 2s (the "update, freeze, update" bug) — it's
+  now a daemon thread + `queue.Queue` drained in `_schedule()` (`ee54608`).
+  Window is 1200x800 but **the WM may move it between
   relaunches** — always re-read `xwininfo -root -tree` before cropping a
-  screenshot (it landed at both `+1970+87` and `+37+106` this session).
+  screenshot (it landed at `+1970+87`, `+37+106`, and `+1894+167` this session).
   On this AirSim build **`simGetImages` (plural) RPCErrors; use per-camera
   `simGetImage(cam, ImageType.Scene)`** (PNG bytes) — mission/multiview patched
   accordingly. **Launch the server tool with CWD = `airsim_plugin/`** (default
