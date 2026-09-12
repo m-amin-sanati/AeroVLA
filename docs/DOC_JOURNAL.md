@@ -1219,3 +1219,58 @@ rendering bugs surfaced once it connected to a real scene + beacon.
   (only doc/committed-state drift — code on H100 unchanged by this fix).
 - Next user knob to test live: MANUAL takeover (M) while eval runs (pauses loop
   until flag cleared; resumes). Suggested after an ep boundary to avoid disruption.
+
+---
+
+## Session 2026-09-12 — Mission console live-render + target-desc fix
+
+### Goal
+- Fix the mission console (`scripts/mission_viewer.py`) not showing any view, and
+  the target description rendering as incomplete/list-repr in the live ForestPack
+  split eval.
+
+### What I did
+- **Diagnosed with real AP/API checks** (not guessing): window was tk 403x279
+  (tiny), and views were placeholders. Root cause was TWO compounding bugs:
+  1. `__init__` ended with `self.root.mainloop()` → it blocked → `main()` never
+     reached `v._start()` → `_schedule`/`_frame` (the update loop) never ran.
+  2. `WorkerPool._run` **permanently** marked workers faulty on any transient
+     RPC error → all subsequent submits returned None (no traceback).
+  3. `object_desc`/`asset_name`/`position` are **lists** (`["white cow"]`) →
+     label showed ugly list repr + truncated.
+- **Fixes applied, committed, pushed (viewer-only, H100 untouched)**:
+  - `8dcf696`: WorkerPool no-longer-permanent-fault (+per-worker fail counter +
+    auto-reconnect at >=25 consecutive fails, throttled logging); `_draw_target_label`
+    unwraps list fields + shows the **full 408-char instruction** (stripped of
+    `<image>` tag); window `geometry("1200x800")` + `minsize(760,560)`.
+  - `d6a56cf`: moved `mainloop()` to `main()` after `_start()` (the actual "no
+    view" root cause).
+- **Window moved on relaunch** to `+37+106` — first screenshot analysis used the
+  stale `+1970+87` coords and misdiagnosed a "flat grey" FRONT until I rechecked
+  `xwininfo`.
+- Final verification at `+37+106`: FRONT 55410 unique colors (live, diff ~24/4s),
+  BOTTOM 58099, LIDAR 22833, TARGET label renders, log 0 errors.
+
+### Problems / solutions
+- `mainloop()` in `__init__` blocked `_start()` → move to `main()` (commit `d6a56cf`).
+- Permanent worker faulting hid live-render failures → soft-fail + reconnect
+  (`8dcf696`).
+- List-typed beacon fields / missing full instruction → `_un()` + instruction
+  body (`8dcf696`).
+- Window WM position changes between relaunches → always re-read `xwininfo`
+  before cropping screenshots.
+
+### Current state (verified)
+- Viewer pid 2427839 ALIVE on `:1`, 1200x800 at `+37+106`, log 0 errors.
+- Split stack alive: split 2257244, server 2257497, tunnel 2260184, viewer
+  2427839 (note: viewer relaunched manually, kill it separately, NOT via split.)
+- H100 eval pid 39888 ALIVE: `Completed: 5 / 438`, drone moving toward current
+  target (~32 m out). No manual flag on H100 → eval not blocked.
+- Git: local `main` = `d6a56cf`, pushed to fork. H100 still `f76f09f` (not reset
+  mid-eval; only local viewer/docs drift).
+
+### Next steps
+- Monitor eval; optional later H100 sync once reset is safe.
+- Test MANUAL takeover (M) with the live viewer after an episode boundary.
+- If a Debugger later re-opens scenes: viewer is independent read-only clients,
+  it reconnects via WorkerPool auto-recover.

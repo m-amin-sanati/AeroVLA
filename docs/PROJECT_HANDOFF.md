@@ -101,7 +101,7 @@ Git status: 5 modified tracked files + several untracked new files/dirs.
 | `scripts/run_eval.sh` (NEW tracked) | **2026-09-10 (cont.3, `398ac2b` + `9fa1637`)**: independent H100 eval launcher. argv `PORT`(30000) `LOG`(/tmp/split_eval.log). `touch $LOG; chmod 666 $LOG; rm -f $PIDFILE` before `su ubuntu -c` launch (log-Permission-denied fix); pidfile `/tmp/aerovla_eval_<PORT>.pid` (`su ubuntu -c 'nohup ... & echo $!'` — PID capture verified); INT/TERM/EXIT trap kills the eval; keep-alive wait loop. |
 | `airsim_plugin/AirVLNSimulatorServerTool.py` (+`AirVLNSimulatorClientTool_AeroVLA.py`) | **2026-09-12 (R&D LiDAR, `<commit>`):** added `"Lidar1"` sensor to `AIRSIM_SETTINGS_TEMPLATE` (SensorType 6, 16ch, Range 100 m, 100000 PPS, 10 RPS, HFOV ±90°, VFOV −5..−35°, `SensorLocalFrame`); client `Lidar(BaseSensor)` class wired into `getSensorInfo()` + `move_path_by_actions` as `{'sensors':{...,'lidar':...}}`. Also fixed template `ViewMode` `Manual`→`SpringArmChase` so generated per-port settings keep the chase cam (was inconsistent with committed `settings/30001-30002`). **Verified live** (ForestPack, port 30001): 25 real lidar points after simulated motion. |
 | `scripts/split.sh` | **2026-09-12 (part 12, `f76f09f`):** `--cameras` now launches **`scripts/mission_viewer.py`** (Option A mission console) instead of `camera_viewer.py`; help text + summary line updated. Same `$SCENE_PORT` (`LOCAL_PORT+1`). |
-| `scripts/mission_viewer.py` (`f76f09f` + `3438b81`) | **2026-09-12:** consolidated mission console (Option A): TARGET box (per-episode desc/asset/pos) + FRONT + BOTTOM + LIDAR side-by-side + telemetry + **M = AUTO/MANUAL takeover**. Manual → WASD/R-F/Q-E fly via nonblocking `moveByVelocityAsync`/`hoverAsync`; pushes `/tmp/aerovla_manual.json` to H100 over direct ssh. Polls `/tmp/aerovla_target.json` (local-first, else ssh cat H100). Uses per-camera `simGetImage` (plural RPCErrors on this build). **`3438b81` bugfix:** beacon `object_position` is `[[x,y,z],...]` → `_draw_target_label`/`_target_xy` use `pos[0]`; startup moved from `__init__` to `_start()` only (was double-registering the frame loop + calling nonexistent `_tick`). |
+| `scripts/mission_viewer.py` (`f76f09f` + `3438b81` + `8dcf696` + `d6a56cf`) | **2026-09-12:** consolidated mission console (Option A): TARGET box (per-episode desc/asset/pos) + FRONT + BOTTOM + LIDAR side-by-side + telemetry + **M = AUTO/MANUAL takeover**. Manual → WASD/R-F/Q-E fly via nonblocking `moveByVelocityAsync`/`hoverAsync`; pushes `/tmp/aerovla_manual.json` to H100 over direct ssh. Polls `/tmp/aerovla_target.json` (local-first, else ssh cat H100). Uses per-camera `simGetImage` (plural RPCErrors on this build). **`3438b81`:** beacon `object_position` is `[[x,y,z],...]` → `pos[0]`; startup moved from `__init__` to `_start()` (was double-registering + nonexistent `_tick`). **`8dcf696`:** (a) `WorkerPool._run` no longer permanently marks workers faulty on transient RPC errors (that silently killed ALL views); adds per-worker fail counter + auto-reconnect at >=25 consecutive fails + throttled logging; (b) target label unwraps list-typed `object_desc`/`asset_name` (`["white cow"]`) and now shows the **full instruction** (stripped of `<image>`, wrapped) — fixes "target description isnt complete"; (c) window `geometry("1200x800")`+`minsize(760,560)` (was tiny 403x279 → views clipped). **`d6a56cf` (THE "no view" root cause):** `__init__` ended with `self.root.mainloop()` → blocked → `main()` never reached `_start()` → frame loop never ran → placeholders. Moved `mainloop()` to `main()` after `_start()`. Verified live: FRONT/BOTTOM ~55-58k unique colors updating, LIDAR live, 0 log errors. |
 | `src/vlnce_src/closeloop_util.py` | **2026-09-12 (part 12, `f76f09f`):** `EvalBatchState.__init__` → `_write_target_beacon(env_batchs)` (calls at line 135, def at 150): writes per-mission `/tmp/aerovla_target.json` (asset_name w/ `AA` prefix, object_position, object_desc, instruction, target_positions). Added `import time`. |
 | `src/vlnce_src/eval_aerovla.py` | **2026-09-12 (part 12, `f76f09f`):** `_manual_takeover_active()` reads `/tmp/aerovla_manual.json`; step loop blocks with `while _manual_takeover_active(): time.sleep(0.2)` before `makeActions` so the autopilot does not fight a local human pilot. Added `import json`. |
 | `scripts/camera_viewer.py` | **2026-09-12 (part 12):** marked **SUPERSEDED** — see `scripts/mission_viewer.py`. Kept for reference. |
@@ -190,7 +190,7 @@ fix 4–5 s `simGetImages` latency.
 | `eval_results/` | **DONE — synced locally (2026-09-09).** `eval_results/checkpoints/seen_valset/BrushifyCountryRoads/` = 123 episode dirs (50 `success_`, 73 plain → SR ≈ 40.65%). Each has `log/`, `ori_info.json`, `object_description.json`, camera dirs. No CSVs (metric.sh never ran). **2026-09-09 (cont.): the H100 copy of these 123 was moved to `BrushifyCountryRoads.bak_20260909_priorCPU123` and a fresh 123-ep split re-run is ACTIVE over the tunnel** (see "Split full-run state" row). |
 | Split tooling | `scripts/split.sh` (**2026-09-09 FIXED**: uses `aero_vla` python via `$SERVER_PYTHON` + deps check). Server tool canonical (2026-09-10): default `HOST=127.0.0.1`, optional `--host 0.0.0.0`, `--windowed` optional. Local server `0.0.0.0:30000` for split, reverse tunnel up, H100→`127.0.0.1:30000` = OK (verified 2026-09-09). |
 | Split tooling MSGPACK | **2026-09-09: H100 venv must have `msgpack==1.1.2`** (was 1.2.2 → msgpack-RPC framing breaks; server crashes `transport/tcp.py:27` on first real RPC; client silently dies). Fixed + verified via real RPC `ping`. |
-| Split full-run state | **2026-09-12 (part 12 + bugfix round 2):** ForestPack eval `split.sh 30000 BrushifyForestPack --windowed --cameras` **RUNNING** with the mission console as the `--cameras` panel. Verified 13:32 UTC: `Completed: 1 / 438`, ep2 in progress. Local stack ALIVE: split 2257244, server 2257497, tunnel 2260184, viewer 2273272 (mission console window confirmed on `:1` via `xwininfo`). H100 eval pid 39888 ALIVE. Search radar: beacon `object_position` = `[[x,y,z],...]` (fixed in `3438b81`). Next: monitor; optional MANUAL-test (M) after an ep boundary. |
+| Split full-run state | **2026-09-12 (part 12 + bugfix rounds 2+3):** ForestPack eval `split.sh 30000 BrushifyForestPack --windowed --cameras` **RUNNING** with the mission console as the `--cameras` panel. Stack ALIVE: split 2257244, server 2257497, tunnel 2260184, viewer **2427839** (manually relaunched after the fix — kill it separately: `kill -9 $(cat /tmp/aerovla_cameras.pid)`, NOT via the split pid). H100 eval pid 39888 ALIVE, `Completed: 5 / 438`, no manual flag → not blocked. Viewer window 1200x800 at `+37+106` on `:1`, log 0 errors, all views live (FRONT/BOTTOM ~55-58k colors updating, LIDAR live). Fixes: `8dcf696` (worker no-perm-fault + reconnect + list-field unwrap + full instruction + window size) and `d6a56cf` (mainloop moved out of `__init__` — the actual "no view" cause). **Gotcha: window WM position changes across relaunches — re-read `xwininfo` before cropping screenshots.** Next: monitor; optional MANUAL-test (M) after an ep boundary. |
 
 **Split stack software state (2026-09-10):**
 | Component | State |
@@ -234,18 +234,20 @@ H100 stays push-readonly (see §12 #13 for base64 transfer helper). Both `main`s
 
 ## 9. Next steps (what the agent/run should do)
 
-> **CURRENT STATUS (2026-09-12, part 12 + bugfix round 2): MISSION CONSOLE LIVE + FORESTPACK EVAL RUNNING.**
+> **CURRENT STATUS (2026-09-12, bugfix rounds 2+3): MISSION CONSOLE FULLY LIVE + FORESTPACK EVAL RUNNING.**
 > Launched `bash scripts/split.sh 30000 BrushifyForestPack --windowed --cameras`
-> (detached) → full stack up + H100 eval running. Mission console confirmed
-> rendering on `:1` (`xwininfo` shows the tk window), 0 errors, FRONT/BOTTOM/LIDAR
-> verified via API probe (129 KB / 690 KB PNG, 47.8 k lidar pts near geometry).
-> Fixed during live-debug (`3438b81`, committed + pushed; H100 NOT reset, it runs
-> `f76f09f` — H100-side files unchanged by this fix): (a) beacon `object_position`
-> is `[[x,y,z],...]` → `_draw_target_label`/`_target_xy` now use `pos[0]`;
-> (b) `__init__` double-registered the frame loop (`_tick` nonexistent + `_start`
-> re-boot) → startup moved to `_start()` only. Eval progress: **1/438 Completed**,
+> (detached) → full stack up + H100 eval running. Mission console NOW actually
+> renders live views: FRONT + BOTTOM + LIDAR + full TARGET/instruction label in a
+> 1200x800 window (`:1`), 0 log errors. Fixed during live-debug:
+> `3438b81` (beacon `object_position` nesting + single-loop start),
+> `8dcf696` (WorkerPool no-permanent-fault + auto-reconnect flux; target label
+> list-field unwrap + **full instruction**; window 1200x800), and
+> `d6a56cf` (**mainloop blocked `_start()` → no frame loop = the actual "no view"
+> cause; moved to `main()`**). Committed + pushed to fork `8dcf696..d6a56cf`;
+> H100 NOT reset (runs `f76f09f` — H100-side files unchanged). Eval progress:
+> **5/438 Completed**,
 > ep2 in progress (verified 2026-09-12 13:32). PIDs: split 2257244 / server
-> 2257497 / tunnel 2260184 / viewer 2273272 (local), H100 eval 39888.
+> 2257497 / tunnel 2260184 / viewer 2427839 (local), H100 eval 39888.
 > **Next:** monitor; optionally test MANUAL (M) after an ep boundary; H100 re-sync
 > optional later. Full successful eval = metrics pull per `docs/AEROVLA_EVAL_RUNBOOK.md`.
 >
