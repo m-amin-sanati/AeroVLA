@@ -71,9 +71,10 @@ def _get_scene(client, cam):
 class WorkerPool:
     def __init__(self, port, n=8):
         self.clients = []
-        self._faulty = set()
+        self.fails = [0] * n
         self.pool = ThreadPoolExecutor(max_workers=n, thread_name_prefix="mission")
         self.port = port
+        self._err_count = 0
         for _ in range(n):
             try:
                 self.clients.append(_make_client(port))
@@ -82,10 +83,9 @@ class WorkerPool:
                 print(f"mission: client connect failed: {type(e).__name__}: {e}", flush=True)
 
     def _get(self, i):
-        if i in self._faulty or i >= len(self.clients):
+        if i >= len(self.clients):
             return None
-        c = self.clients[i]
-        return c
+        return self.clients[i]
 
     def submit(self, fn, *args, worker=None):
         return self.pool.submit(self._run, worker or 0, fn, *args)
@@ -95,11 +95,33 @@ class WorkerPool:
         if c is None:
             return None
         try:
-            return fn(c, *args)
+            r = fn(c, *args)
+            self.fails[i] = 0
+            return r
         except Exception as e:
-            if "Reconnect" in str(e) or "timed out" in str(e).lower():
-                self._faulty.add(i)
+            self._err_count += 1
+            self.fails[i] += 1
+            if self.fails[i] >= 25:
+                self._reconnect(i)
+                self.fails[i] = 0
+            if self._err_count <= 12 or self._err_count % 200 == 0:
+                print(f"mission: fetch err ({type(e).__name__}: {str(e)[:80]}) "
+                      f"worker={i} fail={self.fails[i]} total={self._err_count}", flush=True)
             return None
+
+    def _reconnect(self, i):
+        try:
+            old = self.clients[i]
+            if old is not None:
+                try:
+                    old.reset()
+                except Exception:
+                    pass
+            self.clients[i] = _make_client(self.port)
+            print(f"mission: reconnected worker {i}", flush=True)
+        except Exception as e:
+            self.clients[i] = None
+            print(f"mission: reconnect worker {i} failed: {type(e).__name__}: {e}", flush=True)
 
 
 def fetch_lidar(client):
@@ -152,11 +174,13 @@ class MissionViewer:
 
         self.root = tk.Tk()
         self.root.title(f"AeroVLA mission console  (AirSim :{port})")
+        self.root.minsize(760, 560)
+        self.root.geometry("1200x800")
 
         top = tk.Frame(self.root)
         top.pack(fill="x")
         self.target_lbl = tk.Label(top, text="target: poll...", justify="left",
-                                   anchor="w", wraplength=700, font=("Monospace", 10))
+                                   anchor="w", wraplength=1000, font=("Monospace", 10))
         self.target_lbl.pack(side="left", padx=6, pady=4, fill="x", expand=True)
         self.mode_lbl = tk.Label(top, text="[AUTO]", font=("Monospace", 12, "bold"),
                                  fg="lime", bg="#002200")
@@ -236,15 +260,26 @@ class MissionViewer:
 
     def _draw_target_label(self):
         t = self.target or {}
-        desc = t.get("object_desc", "")
-        asset = t.get("asset_name", "")
+
+        def _un(l):
+            if isinstance(l, (list, tuple)):
+                return l[0] if l else ""
+            return l or ""
+
+        desc = _un(t.get("object_desc", ""))
+        asset = _un(t.get("asset_name", ""))
         pos = t.get("object_position", [])
         pos_s = ""
         if pos and isinstance(pos[0], (list, tuple)):
             x, y, z = pos[0][:3]
             pos_s = f"target pos: ({x:.1f}, {y:.1f}, {z:.1f})"
+        inst = _un(t.get("instruction", ""))
+        if inst and inst.startswith("<image>"):
+            inst = inst[len("<image>"):].strip()
+        head = f"TARGET: {desc}  [{asset}]   {pos_s}"
+        body = f"\n{inst}" if inst else ""
         self.target_lbl.configure(
-            text=f"TARGET: {desc}  [{asset}]   {pos_s}"
+            text=head + body,
         )
 
     # ---- main loop ----
