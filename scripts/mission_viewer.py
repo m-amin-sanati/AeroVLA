@@ -178,8 +178,6 @@ class MissionViewer:
         for k in ("<KeyPress>", "<KeyRelease>"):
             self.root.bind(k, self._on_key)
         self.root.protocol("WM_DELETE_WINDOW", self._quit)
-        self._pump_target()
-        self._tick()
         self.root.mainloop()
 
     # ---- key handling (manual flight + mode toggle) ----
@@ -241,7 +239,10 @@ class MissionViewer:
         desc = t.get("object_desc", "")
         asset = t.get("asset_name", "")
         pos = t.get("object_position", [])
-        pos_s = f"target pos: {tuple(round(float(v), 1) for v in pos)}" if pos else ""
+        pos_s = ""
+        if pos and isinstance(pos[0], (list, tuple)):
+            x, y, z = pos[0][:3]
+            pos_s = f"target pos: ({x:.1f}, {y:.1f}, {z:.1f})"
         self.target_lbl.configure(
             text=f"TARGET: {desc}  [{asset}]   {pos_s}"
         )
@@ -300,7 +301,8 @@ class MissionViewer:
         t = self.target
         if not t or not t.get("object_position") or pc is None or len(pc) == 0:
             return None
-        return (t["object_position"][0], t["object_position"][1])
+        pos0 = t["object_position"][0]
+        return (pos0[0], pos0[1])
 
     def _draw_telemetry(self):
         try:
