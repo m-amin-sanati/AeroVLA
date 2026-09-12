@@ -126,6 +126,14 @@ server-render-only and harmless to the client process — leave them.
 > #   WASD/arrows move, R/F up/down, Q/E yaw, +/- speed, P pause, Esc exit
 > #   TARGET box updates per episode via ssh-poll of H100 /tmp/aerovla_target.json
 > #      (written by EvalBatchState._write_target_beacon each mission).
+> #   NOTE (2026-09-12): beacon `object_position` is an ARRAY of triples
+> #      `[[x,y,z],...]` (parallel to asset_name[]); mission_viewer uses pos[0].
+> #   Viewer relaunch after edit (viewer-only bugfix; no H100 reset needed):
+> #      kill -9 $(cat /tmp/aerovla_cameras.pid); DISPLAY=:1 nohup \
+> #      /media/sanati/DriveE/miniconda3/envs/aero_vla/bin/python \
+> #      scripts/mission_viewer.py 30001 --retry 120 > /tmp/aerovla_cameras.log 2>&1 &
+> #      echo $! > /tmp/aerovla_cameras.pid
+> #   H100 reset only needed if H100-side files (src/vlnce_src/*) change.
 >
 > **STOP (ONE command — tears down local server + tunnel + viewer + remote H100 eval):**
 > ```bash

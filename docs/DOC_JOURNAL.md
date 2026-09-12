@@ -1169,3 +1169,53 @@ kill the running eval.
 - Commit `M AGENTS.md, split.sh, closeloop_util.py, eval_aerovla.py, docs/*`,
   `?? mission_viewer.py, drone_keyboard.py, multiview.py`.
 - Push fork, sync H100 (`git fetch fork && git reset --hard fork/main`), relaunch eval.
+
+---
+
+## Session: 2026-09-12 mission console live-debug + relaunch (bugfix round 2)
+
+### Goal
+Land the Option A mission console against the live ForestPack split eval; fix the
+rendering bugs surfaced once it connected to a real scene + beacon.
+
+### What you did
+- Confirmed live beacon shape: `/tmp/aerovla_target.json` has
+  `object_position: [[x,y,z]]` (array of triples, parallel to `asset_name[]`).
+- **Bug 1 fix** (`scripts/mission_viewer.py`): `_draw_target_label` +
+  `_target_xy` treated `object_position` as flat `[x,y,z]` → `TypeError:
+  float()... not 'list'`. Now take `pos[0]` triple, use `pos[0][0]`/`pos[0][1]`.
+- **Bug 2 fix**: `__init__` called `self._tick()` (nonexistent; renamed to
+  `_schedule`) AND `_start()` re-booted `_pump_target`+`_schedule` → double loop.
+  Moved startup out of `__init__`; `_start()` is the single entry.
+- Restored regenerated `settings/30001/settings.json` to HEAD (live server
+  re-minifies the template each launch; it now contains BottomCamera + Lidar1 +
+  SpringArmChase, but we treat the template as source of truth to avoid churn).
+- Relaunched viewer: `kill -9 $(cat /tmp/aerovla_cameras.pid)`;
+  `DISPLAY=:1 nohup /media/sanati/DriveE/miniconda3/envs/aero_vla/bin/python
+  scripts/mission_viewer.py 30001 --retry 120 > /tmp/aerovla_cameras.log 2>&1 &`;
+  pid 2273272, wrote pidfile.
+- Verified via API probe: FrontCamera 129 KB PNG, BottomCamera 690 KB PNG, Lidar
+  47815 pts (drone low/near), drone pos live → scene API healthy.
+- Confirmed tkinter window on `:1`: `xwininfo -root -tree` shows
+  `"AeroVLA mission console (AirSim :30001)"` (tk 403x279 + mutter frame).
+- Committed `3438b81` "mission_viewer: fix target_position list-of-lists parsing
+  + single loop start"; pushed `f76f09f..3438b81` to fork.
+- **Did NOT reset H100** (running eval would be disturbed; H100 files unchanged).
+
+### Problems / solutions
+- `object_position` nested → normalize `pos[0]` (see Bug 1).
+- Double `root.after` loop from `__init__`+`_start` → `_start` only (Bug 2).
+- Server regen minifies `settings.json` → restore to HEAD (template is truth).
+
+### Current state (verified)
+- Full stack alive: split 2257244, server 2257497, tunnel 2260184, viewer 2273272;
+  mission console window rendering on `:1`, log 0 bytes / 0 errors.
+- Eval healthy on H100 (pid 39888): `Completed: 1 / 438`, ep1 done, ep2 in
+  progress (target <203,-432>). Confirm ALIVE each check.
+- Git: local `main` = `3438b81`; fork pushed. H100 still at `f76f09f` (fine).
+
+### Next steps
+- Monitor eval; when H100 not yet reset, a later sync to `3438b81+` is optional
+  (only doc/committed-state drift — code on H100 unchanged by this fix).
+- Next user knob to test live: MANUAL takeover (M) while eval runs (pauses loop
+  until flag cleared; resumes). Suggested after an ep boundary to avoid disruption.
