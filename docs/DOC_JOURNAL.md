@@ -1369,3 +1369,36 @@ rendering bugs surfaced once it connected to a real scene + beacon.
 ### Next steps
 - Monitor progress (now 418 eps dataset; ~4 s/step @2x → est much faster total).
 - Docs updated in this session.
+
+---
+
+## Session 2026-09-12 (cont.) — Mission console froze after eval restart (fixed by viewer relaunch)
+
+### Goal
+- User reported "the mission console doesnt work properly" after the speed-2x eval restart.
+
+### Problem
+- Mission console (pid 2450609, launched 18:38 BEFORE the eval restart) **wedged**: its
+  AirSim RPC sockets to the scene on :30001 were invalidated when the scene was respawned
+  (new UE4 pid 2522549) by the restart. Log showed `mission: fetch err (TimeoutError:
+  Request timed out)` then went **silent** (39 lines, delta 0 over 6s, process alive at
+  19% CPU, tkinter window up but views stale/frozen = "doesn't work").
+
+### Solution
+- Restarted the viewer exactly as `split.sh` does:
+  `kill $(cat /tmp/aerovla_cameras.pid)`; relaunch
+  `DISPLAY=:1 nohup <py> -u scripts/mission_viewer.py 30001 --retry 120 > /tmp/aerovla_cameras.log 2>&1 &`
+  → new pid **2530679**, "Connected!" repeatedly, 0 errors after 12s.
+
+### Verification
+- FRONT camera updating (7/9 diff samples, values up to 15.7 while drone flies).
+- TARGET label text present (cols 318-479 at rows 5-40), telemetry region populated.
+- H100 healthy: eval Step 57/418, beacon `SM_Cape_Buffalo "black cow"` (updated 15:56),
+  `manual:false` — eval unaffected by viewer restart.
+- Window position after relaunch moved to `+37+106` (WM moves it; re-read `xwininfo`).
+
+### Gotcha / runbook (important)
+- **A viewer running across an eval restart WILL wedge.** Any eval restart
+  (e.g. CRUISE_SPEED change) OR server/UE4 scene respawn invalidates the viewer's
+  AirSim connection → stale/frozen console. **Always relaunch the mission console
+  after restarting the eval/server.**

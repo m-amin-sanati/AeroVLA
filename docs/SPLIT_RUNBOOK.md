@@ -406,3 +406,9 @@ The eval's forward-flight speed is a module-local constant:
      `FileNotFoundError ... dataset_raw/BrushifyCountryRoads/.../mark.json`).
 5. Verify: `grep "Step:" /tmp/split_eval.log | tail`; cadence should drop toward
    ~4 s/step at 2.0 (was ~8-10 s at 1.0). Path per step unchanged.
+6. **ALWAYS relaunch the mission console after an eval restart** (its AirSim socket
+   to the scene is invalidated when the scene respawns → viewer goes silent/wedged
+   with stale frozen views):
+   `kill $(cat /tmp/aerovla_cameras.pid); DISPLAY=:1 nohup <py> -u scripts/mission_viewer.py 30001 --retry 120 > /tmp/aerovla_cameras.log 2>&1 &`
+   Re-read window position with `xwininfo -root -tree` before cropping screenshots
+   (WM moves it, e.g. `+1894+167` → `+37+106`).
