@@ -1402,3 +1402,42 @@ rendering bugs surfaced once it connected to a real scene + beacon.
   (e.g. CRUISE_SPEED change) OR server/UE4 scene respawn invalidates the viewer's
   AirSim connection → stale/frozen console. **Always relaunch the mission console
   after restarting the eval/server.**
+
+---
+
+## Session 2026-09-12 (cont.) — FULL teardown of the split evaluation
+
+### Goal
+- User: "now kill the entire evaluation".
+
+### What I did
+1. Snapshot stack: split 2257244, server 2257497, viewer 2530679, UE4 (:30001) 2522549,
+   H100 eval (pidfile /tmp/aerovla_eval_30000.pid, ~Step 57+/418).
+2. `kill -TERM 2257244` → split.sh `cleanup()` trap: killed server + UE4 children
+   (pkill -P + fuser -k ports 30001..30016) + tunnel + attempted remote H100 kill.
+3. Trap left the manually-relaunched viewer (2530679) alive → `kill -TERM/KILL 2530679`.
+4. Removed stale pidfiles (`/tmp/aerovla_split_30000.pid`, `/tmp/aerovla_cameras.pid`).
+
+### Problem
+- The H100 kill inside split's trap uses `ssh` with 30s timeout; SSH was flaky
+  (coder hangup/dial timeouts) so the remote kill may have been skipped.
+- First remote check "eval_aerovla: RUNNING" with CHANGING pids
+  (106356→106494→106551→106609→106668) — initially misread as a respawning
+  supervisor/watchdog. Root cause: my own `ssh`/`pgrep` pipe command lines
+  contained "eval_aerovla.py" and self-matched.
+
+### Solution
+- Fixed the self-match by using `pgrep -f [e]val_aerovla.py` (bracket trick) and a
+  full `ps` scan that excludes its own command string. Final definitive check:
+  `eval_aerovla=0 run_eval=0 any_aerovla=0`, pidfile gone → **eval fully stopped,
+  no supervisor/wrapper left**.
+
+### Runbook
+- Full teardown: `kill -TERM $(cat /tmp/aerovla_split_30000.pid)` (or pid of split.sh)
+  → trap tears down server/tunnel/UE4 + ssh-kills H100. Then:
+  - `pgrep -af "mission_viewer" | grep -v grep` → kill any manually-launched viewer.
+  - `rm -f /tmp/aerovla_split_30000.pid /tmp/aerovla_cameras.pid`
+  - Verify H100: `ssh H100 'pgrep -f [e]val_aerovla.py | wc -l'` → expect 0.
+  - **Gotcha: use the `[e]val` bracket trick (or full `ps -eo pid,ppid,cmd` + grep -v grep)
+    to avoid your own ssh command self-matching pgrep -f.**
+- Current state: server ports 30000/30001 free; no local eval procs; H100 idle.
