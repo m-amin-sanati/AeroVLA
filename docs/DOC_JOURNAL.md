@@ -689,3 +689,78 @@ a one-command prep.
 - Prep complete & verified on both boxes. **Next: launch eval**
   (local `bash scripts/split.sh --windowed`; H100 `AEROVLA_MAP=BrushifyForestPack
   bash scripts/run_eval.sh`; 444 eps). See runbook §5.5 for chase-cam view.
+
+---
+
+## Session 2026-09-12 — R&D: LiDAR sensor on AeroVLA drone (verified live)
+
+### Goal
+R&D task from user: add a **LiDAR sensor** to the AeroVLA drone (AirSim/UE4) and
+**verify** `getLidarData` actually returns real points from the running
+BrushifyForestPack UE4 engine. Research-first (AirSim docs as reference). ForestPack
+eval launch remains the user's pending action.
+
+### What I did
+- **Researched AirSim LiDAR schema** (official docs,
+  https://microsoft.github.io/AirSim/lidar/ ): `SensorType: 6`, `Enabled`,
+  `NumberOfChannels`, `Range`, `PointsPerSecond`, `RotationsPerSecond`,
+  `HorizontalFOVStart/End`, `VerticalFOVUpper/Lower` (deg, NED), `X/Y/Z` +
+  `Roll/Pitch/Yaw` (relative to vehicle), `DataFrame`
+  (`SensorLocalFrame`/`VehicleInertialFrame`), `DrawDebugPoints`. Client API:
+  `getLidarData(lidar_name='', vehicle_name='')` → `LidarData(.point_cloud flat
+  [x,y,z]×N, .time_stamp, .pose, .segmentation)`. Confirmed present in BOTH
+  local (`aero_vla` py3.10) and H100 (`.venv` py3.12) airsim clients.
+- **Server template edit** `airsim_plugin/AirVLNSimulatorServerTool.py`
+  `AIRSIM_SETTINGS_TEMPLATE["Vehicles"]["Drone_1"]["Sensors"]`: added `"Lidar1"` —
+  16 ch, Range 100.0, 100000 PPS, 10 RPS, HFOV ±90°, VFOV −5..−35 deg,
+  `SensorLocalFrame`, `DrawDebugPoints: False`. (Template propagates
+  automatically to the per-port `settings/<port>/settings.json` at scene launch.)
+- **Client capture** `airsim_plugin/AirVLNSimulatorClientTool_AeroVLA.py`:
+  added `Lidar(BaseSensor)` class (`retrieve()` → `getLidarData('Lidar1')` →
+  point_cloud/time_stamp/pose/segmentation), wired into BOTH `getSensorInfo()`
+  (init state) and `move_path_by_actions` (per-step) as `{'sensors': {...,
+  'lidar': l_info}}`. Backward-compatible extra key.
+- **Live verification**: launched local server (G0, port 30000) + reopened
+  BrushifyForestPack scene (port 30001); probe connected, enabled API control,
+  armed, unpaused, ticked (~30 s). `getLidarData('Lidar1')` returned **0 points**
+  while the drone sat at the template spawn (Z≈1248, global-NED — far from
+  geometry). After `simSetKinematics` teleport to `(40, 20, -10)` + `simContinueForFrames`
+  ticking → **25 real points** (flat [x,y,z] × 25, sane timestamp). `default`
+  unnamed lidar name also resolves to `Lidar1`. **VERIFIED WORKING.**
+- Cleanup: closed the scene (server RPC `close_scenes` → True, UE4 gone, 30001
+  closed), killed test server (pidfile), removed /tmp logs.
+- Confirmed eval spawn uses episode `trajectory[0]['position']`
+  (`src/vlnce_src/env_uav.py:298-299`) — near-ground dataset poses, NOT the
+  template's high-altitude default → real lidar hits in real evals. Per-frame
+  lidar is serialized by `save_logs` (`closeloop_util.py:58-63`) into
+  `log/000000.json` as part of `{'frame', 'sensors'}`.
+- Found + fixed a **dangling template inconsistency**: HEAD template had
+  `"ViewMode": "Manual"` while committed `settings/30001-30002/settings.json`
+  have `SpringArmChase` (prior `b59fc25` changed only the generated files → next
+  regeneration would silently revert chase cam). Working tree already had the
+  template fix to `SpringArmChase`; included it in this commit.
+
+### Problems faced / solutions
+1. **0 lidar points at spawn** — sim paused/idle with drone at template high
+   spawn far from geometry. **Fix**: `simPause(False)` + `simContinueForFrames`
+   ticking + teleport to a geometry-rich near-ground pose → 25 pts.
+2. **Probe crash on `.close()`** — `airsim.MultirotorClient` has **no `close()`
+   method** (`AttributeError` at script end), which skipped scene teardown once.
+   **Fix**: dropped `.close()`; torn down via explicit server RPC `close_scenes`.
+
+### Current state
+- Local working tree: LiDAR edits + ViewMode template fix (uncommitted at session
+  start) → **committed** this session (see commit). All test processes cleaned up.
+- Eval-side sensor loop: lidar now captured at init + every step; lands in
+  `save_logs` JSON output. Real evals spawn near-ground → non-empty scans.
+- `sentinel`: point cloud size per frame is up to 16ch×~100m; `save_logs` dumps
+  full JSON each frame → eval log dir grows (acceptable for R&D; consider
+  point-cloud downsampling / opt-out if it becomes too large).
+
+### Next steps
+- Sync to H100: local `git push fork main`, then on H100
+  `git fetch fork && git reset --hard fork/main`.
+- If user wants, run a short live lidar probe on ForestPack again or launch the
+  pending ForestPack eval (user action) — lidar now flows into eval `log/` output.
+- Update `docs/PROJECT_HANDOFF.md` + AGENTS.md §6 (done this session; verify
+  after push).

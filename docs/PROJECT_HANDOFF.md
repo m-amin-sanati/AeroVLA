@@ -99,6 +99,7 @@ Git status: 5 modified tracked files + several untracked new files/dirs.
 | `scripts/split.sh` | **2026-09-10 (cont.3, `398ac2b`)**: resident loop `while true; do wait || true; done` (replaces `tail -f /dev/null` which swallowed TERM); clean-trap EXIT/INT/TERM + `_CLEANED` guard; clean step 1b **UE4-orphan kill** (`fuser -k` on `<PORT>+1..+16` + `pkill -9 -f settings/<PORT>/`); step 5 **auto-launch H100 eval** (`ssh H100 bash run_eval.sh <PORT> /tmp/split_eval.log`) + verify remote pidfile; `--no-eval`; `--cameras`; viewer `--retry 120`; pidfile `/tmp/aerovla_split_<PORT>.pid`; footer `kill ${MAIN_PID}`. |
 | `scripts/camera_viewer.py` | **2026-09-10 (cont.3, `7a45cdb`)**: single persistent tkinter window + reconnectable AirSim client inside `_update` (dropped `cv2` import). Fixes the `TclError: image "pyimageN" doesn't exist` crash from recreating a Tk root per retry. |
 | `scripts/run_eval.sh` (NEW tracked) | **2026-09-10 (cont.3, `398ac2b` + `9fa1637`)**: independent H100 eval launcher. argv `PORT`(30000) `LOG`(/tmp/split_eval.log). `touch $LOG; chmod 666 $LOG; rm -f $PIDFILE` before `su ubuntu -c` launch (log-Permission-denied fix); pidfile `/tmp/aerovla_eval_<PORT>.pid` (`su ubuntu -c 'nohup ... & echo $!'` — PID capture verified); INT/TERM/EXIT trap kills the eval; keep-alive wait loop. |
+| `airsim_plugin/AirVLNSimulatorServerTool.py` (+`AirVLNSimulatorClientTool_AeroVLA.py`) | **2026-09-12 (R&D LiDAR, `<commit>`):** added `"Lidar1"` sensor to `AIRSIM_SETTINGS_TEMPLATE` (SensorType 6, 16ch, Range 100 m, 100000 PPS, 10 RPS, HFOV ±90°, VFOV −5..−35°, `SensorLocalFrame`); client `Lidar(BaseSensor)` class wired into `getSensorInfo()` + `move_path_by_actions` as `{'sensors':{...,'lidar':...}}`. Also fixed template `ViewMode` `Manual`→`SpringArmChase` so generated per-port settings keep the chase cam (was inconsistent with committed `settings/30001-30002`). **Verified live** (ForestPack, port 30001): 25 real lidar points after simulated motion. |
 
 ### Untracked / new files & dirs
 
@@ -228,6 +229,16 @@ H100 stays push-readonly (see §12 #13 for base64 transfer helper). Both `main`s
 
 ## 9. Next steps (what the agent/run should do)
 
+> **CURRENT STATUS (2026-09-12): R&D LIDAR SENSOR ADDED + VERIFIED LIVE.**
+> New `Lidar1` (16ch, 100 m) in `AIRSIM_SETTINGS_TEMPLATE` + client `Lidar`
+> capture in `getSensorInfo`/`move_path_by_actions` (per-frame `{'sensors':
+> {...,'lidar':...}}` → lands in `log/000000.json` via `save_logs`). Live-probed
+> against the running ForestPack scene: `getLidarData('Lidar1')` returned **25 pts**
+> after unpausing + moving the drone to a geometry-rich pose (0 pts at the high
+> template spawn). **NOTE:** template `ViewMode` also fixed `Manual`→`SpringArmChase`
+> (was inconsistent with committed per-port settings). Uncommitted LiDAR edits were
+> committed this session; push to fork + H100 `git reset --hard fork/main` pending.
+>
 > **CURRENT STATUS (2026-09-11): BrushifyForestPack PREP COMPLETE.** All prep is
 > now in the parameterized `scripts/prepare_env_data.sh <Map> [CATEGORY]`
 > (commits `61d4283` registry, `6412237` run_eval AEROVLA_MAP, `80b4bc9`+`7a6399d`

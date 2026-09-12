@@ -130,6 +130,16 @@ When something becomes deprecated or is replaced:
   (chase cam) on port 30001 since commit `b59fc25` (UE4 reads `settings/<port>/settings.json`
   `ViewMode` at launch only; current run keeps its baked view). During a run the eval
   sets the drone pose every step → **no WASD flight**; the window is a watch-debug view.
+- **LiDAR sensor (since 2026-09-12)**: `AIRSIM_SETTINGS_TEMPLATE` now has a
+  `"Lidar1"` sensor (SensorType 6, 16ch, Range 100 m, 100000 PPS, 10 RPS, HFOV ±90°
+  VFOV −5..−35°, `SensorLocalFrame`) on every drone; client `Lidar(BaseSensor)` in
+  `AirVLNSimulatorClientTool_AeroVLA.py` captures `getLidarData('Lidar1')`
+  (point_cloud/time_stamp/pose/segmentation) in both `getSensorInfo()` and
+  `move_path_by_actions` → per-frame `{'sensors':{...,'lidar':...}}` persisted by
+  `save_logs` into `log/000000.json`. Verified live on ForestPack (25 pts after
+  sim motion; 0 pts at the high template spawn — sim must be unpaused + near
+  geometry). Template `ViewMode` also fixed `Manual`→`SpringArmChase` for
+  consistency with committed per-port settings.
 - **Git sync (since 2026-09-10)**: both repos now track the personal fork
   `git@github.com:m-amin-sanati/AeroVLA.git` (added as `fork` remote; `origin` stays
   upstream `XuPeng23/AeroVLA`). Fork `main` is the single source of truth; local + H100

@@ -19,7 +19,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
   "SettingsVersion": 1.2,
   "SimMode": "Multirotor",
   "ClockSpeed": 10,
-  "ViewMode": "Manual",
+  "ViewMode": "SpringArmChase",
   "PhysiceEngineName": "ExternalPhysicsEngine",
   "Recording": {
     "RecordInterval": 1,
@@ -232,6 +232,22 @@ AIRSIM_SETTINGS_TEMPLATE = {
                 "VelocityRandomWalk": 0.24,
                 "AccelBiasStabilityTau": 800,
                 "AccelBiasStability": 36
+            },
+          "Lidar1": {
+                "SensorType": 6,
+                "Enabled" : True,
+                "NumberOfChannels": 16,
+                "Range": 100.0,
+                "PointsPerSecond": 100000,
+                "RotationsPerSecond": 10,
+                "HorizontalFOVStart": -90.0,
+                "HorizontalFOVEnd": 90.0,
+                "VerticalFOVUpper": -5.0,
+                "VerticalFOVLower": -35.0,
+                "X": 0, "Y": 0, "Z": 0,
+                "Roll": 0, "Pitch": 0, "Yaw": 0,
+                "DataFrame": "SensorLocalFrame",
+                "DrawDebugPoints": False
             }
       }
     }

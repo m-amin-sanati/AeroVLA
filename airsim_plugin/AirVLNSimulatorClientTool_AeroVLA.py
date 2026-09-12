@@ -82,6 +82,29 @@ class Imu(BaseSensor):
         return self.data
 
 
+class Lidar(BaseSensor):
+    def __init__(self, client, drone_name='', lidar_name='Lidar1'):
+        self.data = {}
+        self.client: airsim.MultirotorClient = client
+        self.drone_name = drone_name
+        self.lidar_name = lidar_name
+
+    def retrieve(self):
+        data = self.client.getLidarData(lidar_name=self.lidar_name, vehicle_name=self.drone_name)
+        point_cloud = list(data.point_cloud)
+        self.data.update({
+            'point_cloud': point_cloud,
+            'time_stamp': data.time_stamp,
+            'pose': {
+                'position': list(data.pose.position),
+                'orientation': [data.pose.orientation.w_val, data.pose.orientation.x_val,
+                                data.pose.orientation.y_val, data.pose.orientation.z_val],
+            },
+            'segmentation': list(data.segmentation),
+        })
+        return self.data
+
+
 class MyThread(threading.Thread):
     def __init__(self, func, args):
         super(MyThread, self).__init__()
@@ -303,6 +326,7 @@ class AirVLNSimulatorClientTool:
             results = []
             state_sensor = State(airsim_client, )
             imu_sensor = Imu(airsim_client, imu_name='Imu')
+            lidar_sensor = Lidar(airsim_client, lidar_name='Lidar1')
 
             airsim_client.enableApiControl(True)
             airsim_client.armDisarm(True)
@@ -385,8 +409,9 @@ class AirVLNSimulatorClientTool:
             
             s_info = state_sensor.retrieve()
             i_info = imu_sensor.retrieve()
+            l_info = lidar_sensor.retrieve()
             for _ in range(5): 
-                results.append({'sensors': {'state': s_info, 'imu': i_info}})
+                results.append({'sensors': {'state': s_info, 'imu': i_info, 'lidar': l_info}})
 
             # Return False here because the local pseudo-collision (stuck) detection 
             # has been refactored to a global check (in closeloop_util.py) to support 3-DoF maneuvers.
@@ -653,9 +678,11 @@ class AirVLNSimulatorClientTool:
         def get_sensor_info(airsim_client: airsim.VehicleClient, ):
             state_sensor = State(airsim_client, )
             imu_sensor = Imu(airsim_client)
+            lidar_sensor = Lidar(airsim_client, lidar_name='Lidar1')
             state_info = state_sensor.retrieve()
             imu_info = imu_sensor.retrieve()
-            return {'sensors': {'state':state_info, 'imu': imu_info}}
+            lidar_info = lidar_sensor.retrieve()
+            return {'sensors': {'state':state_info, 'imu': imu_info, 'lidar': lidar_info}}
         threads = []
         thread_results = []
         for index_1 in range(len(self.airsim_clients)):
