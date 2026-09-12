@@ -366,7 +366,7 @@ class AirVLNSimulatorClientTool:
             EPSILON = 0.01
             YAW_THRESHOLD = 0.25
 
-            CRUISE_SPEED = 1.0 
+            CRUISE_SPEED = 2.0 
             MICRO_MOVE_THRESHOLD = 1.0
 
             need_horizontal_move = horizontal_dist > EPSILON
