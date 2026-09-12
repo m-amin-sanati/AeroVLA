@@ -202,7 +202,6 @@ class MissionViewer:
         for k in ("<KeyPress>", "<KeyRelease>"):
             self.root.bind(k, self._on_key)
         self.root.protocol("WM_DELETE_WINDOW", self._quit)
-        self.root.mainloop()
 
     # ---- key handling (manual flight + mode toggle) ----
     def _on_key(self, e):
@@ -505,6 +504,7 @@ def main():
         try:
             v = MissionViewer(args.port)
             v._start()
+            v.root.mainloop()
             return
         except Exception as e:
             if time.time() >= deadline:
