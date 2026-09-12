@@ -379,3 +379,30 @@ The H100 closed-loop eval can keep running in the background on CPU rendering
 ~49/123 episodes. If the split comes up first, either let the current run continue
 to completion or halt it (`pkill -f eval_aerovla.py`) and restart with the split for
 a much faster run — discarding the partial results.
+
+## Drone speed (CRUISE_SPEED) — how to change & apply
+
+The eval's forward-flight speed is a module-local constant:
+
+- **File**: `airsim_plugin/AirVLNSimulatorClientTool_AeroVLA.py:369`
+- **Line**: `CRUISE_SPEED = 2.0` (was 1.0)
+- **Semantics**: for a per-action displacement ≥ 1 m, the drone is commanded at
+  velocity magnitude = `CRUISE_SPEED` (m/s) with `duration = dist / speed`, so the
+  **path per model action is unchanged — only speed changes**. Micro-moves (<1 m)
+  use a fixed 1 m/s over 1 s (lines 384-388); vertical-only `moveToZAsync` uses a
+  separate `velocity=2.0` (line 406). Manual flyer (mission console / drone_keyboard)
+  speeds are independent (`self.speed`, +/- keys).
+
+### Procedure to change + apply to the running split eval
+1. Edit `CRUISE_SPEED` in `airsim_plugin/AirVLNSimulatorClientTool_AeroVLA.py`.
+2. `py_compile` locally, `git add`+commit+push to fork.
+3. Sync H100: `ssh H100 'cd /workspaces/AeroVLA && git fetch fork && git reset --hard fork/main'`.
+4. **Restart the eval** (no checkpoint/resume — it re-runs from ep 1):
+   - Kill old: read `/tmp/aerovla_eval_30000.pid`, TERM its `run_eval.sh` launcher
+     (cleanup trap kills the python eval), then `pkill -9 -f eval_aerovla.py` to be sure.
+   - **IMPORTANT**: relaunch with the right map or it crashes:
+     `ssh H100 'cd /workspaces/AeroVLA && AEROVLA_MAP=BrushifyForestPack nohup bash scripts/run_eval.sh 30000 /tmp/split_eval.log > /tmp/run_eval_launcher.log 2>&1 &'`
+     (plain `run_eval.sh 30000` defaults to `BrushifyCountryRoads` →
+     `FileNotFoundError ... dataset_raw/BrushifyCountryRoads/.../mark.json`).
+5. Verify: `grep "Step:" /tmp/split_eval.log | tail`; cadence should drop toward
+   ~4 s/step at 2.0 (was ~8-10 s at 1.0). Path per step unchanged.

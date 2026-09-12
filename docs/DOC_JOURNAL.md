@@ -1322,3 +1322,50 @@ rendering bugs surfaced once it connected to a real scene + beacon.
 - Commit + push the SSH-freeze fix + docs.
 - If a real M-keypress test is wanted: run a key-injection (install xdotool with
   sudo, or use a minimal XTest binary) against the viewer; optional.
+
+---
+
+## Session 2026-09-12 (cont.) — DRONE SPEED ×2 (CRUISE_SPEED 1.0→2.0, applied to running eval)
+
+### Goal
+- User: "multiply speed by 2 and affect on current running."
+
+### What I did
+- **Located the speed knob**: `airsim_plugin/AirVLNSimulatorClientTool_AeroVLA.py:369`
+  `CRUISE_SPEED = 1.0` — the only flight-velocity scaler for the eval forward
+  moves. For displacement ≥ `MICRO_MOVE_THRESHOLD` (1 m): velocity magnitude =
+  `CRUISE_SPEED`, `duration = total_dist / CRUISE_SPEED`, so **path per action is
+  unchanged, only speed doubles**. Micro-moves (<1 m) keep fixed 1 m/s over 1 s
+  (lines 384-388); `moveToZAsync` vertical-only uses `velocity=2.0` (line 406) —
+  both untouched.
+- **Changed** `CRUISE_SPEED = 1.0` → `2.0`, py_compile OK, committed `263c83d`,
+  pushed to fork.
+- **Synced H100**: `git fetch fork && git reset --hard fork/main` → H100 at
+  `263c83d`, confirmed `CRUISE_SPEED = 2.0`.
+- **Restarted the running eval** (user approved; no checkpoint/resume exists so it
+  re-runs from ep 1, old run was only 14/438 → ~3% loss):
+  - Killed old eval pid 39888 (via `run_eval.sh` TERM on its launcher pid 39514 →
+    cleanup trap) → confirmed dead, no `eval_aerovla` leftovers.
+  - **Gotcha hit**: first relaunch used plain `bash scripts/run_eval.sh 30000`
+    which defaults `AEROVLA_MAP=BrushifyCountryRoads` → crashed
+    `FileNotFoundError: dataset_raw/BrushifyCountryRoads/.../mark.json`. The split
+    eval actually targets **BrushifyForestPack**. Relaunched with
+    `AEROVLA_MAP=BrushifyForestPack` → `eval client launched (pid 99768)`.
+  - New eval loaded model 3/3 shards, opened `BrushifyForestPack` scene on
+    127.0.0.1:30000 (49.6s), started ep 1/418 at Step 0 (15:57:51).
+
+### Verification
+- Old cadence @1.0 m/s: ~8-10 s/step. New @2.0 m/s: steps 1-10 in 15:57:56→15:58:35
+  ≈ **4 s/step → ~2× faster, matches 2.0 m/s**. Same `batch[0/1] distance` per step
+  (path unchanged). Could not read live `getMultirotorState` velocity (that single
+  machine's RPC errors on this build) — cadence is the reliable proxy.
+
+### Current state
+- Local stack: split 2257244, server 2257497, viewer 2450609 all ALIVE (eval
+  reuses port 30000 — no viewer change needed).
+- H100 eval pid **99768** RUNNING, ep 1/418 at 2.0 m/s, log `/tmp/split_eval.log`.
+- Git: local + H100 at `263c83d` (fork source of truth).
+
+### Next steps
+- Monitor progress (now 418 eps dataset; ~4 s/step @2x → est much faster total).
+- Docs updated in this session.
