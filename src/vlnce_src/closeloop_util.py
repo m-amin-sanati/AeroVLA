@@ -2,6 +2,7 @@
 import json
 import random
 import shutil
+import time
 import cv2
 import numpy as np
 from utils.utils import *
@@ -132,6 +133,7 @@ class EvalBatchState:
         self.envs_to_pause = []
         self.instructions = [b['instruction'] for b in env_batchs]
         self.model_stops = [False] * batch_size
+        self._write_target_beacon(env_batchs)
 
         self.stuck_counters = [0] * batch_size
         self.last_positions_check = [None] * batch_size
@@ -145,6 +147,28 @@ class EvalBatchState:
     def _load_object_description(self):
         with open(args.object_name_json_path, 'r') as f:
             return {item['object_name']: item['object_desc'] for item in json.load(f)}
+
+    def _write_target_beacon(self, env_batchs):
+        """Write per-mission target info for the local mission console (Option A).
+
+        Called once per mission (EvalBatchState is constructed per next_minibatch).
+        Writes /tmp/aerovla_target.json on the H100; the local viewer polls it
+        (directly, or via split.sh forwarding) to show TARGET + object_position
+        while the mission runs.
+        """
+        try:
+            beacon = {
+                'asset_name': [b['object']['asset_name'] for b in env_batchs],
+                'object_position': [b['object_position'] for b in env_batchs],
+                'object_desc': list(self.object_infos),
+                'instruction': list(self.instructions),
+                'target_positions': list(self.target_positions),
+                'at': time.time(),
+            }
+            with open('/tmp/aerovla_target.json', 'w') as f:
+                json.dump(beacon, f)
+        except Exception as e:
+            print(f"[beacon] target write failed: {type(e).__name__}: {e}", flush=True)
 
     def _initialize_batch_data(self):
         outputs = self.eval_env.reset()

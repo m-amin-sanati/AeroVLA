@@ -140,6 +140,25 @@ When something becomes deprecated or is replaced:
   sim motion; 0 pts at the high template spawn — sim must be unpaused + near
   geometry). Template `ViewMode` also fixed `Manual`→`SpringArmChase` for
   consistency with committed per-port settings.
+  validity` `b59fc25` changed only the generated files → next
+  regeneration would silently revert chase cam). Working tree already had the
+  template fix to `SpringArmChase`; included it in this commit.
+- **Live-view gotcha (since 2026-09-12)**: viewer windows on the local box
+  `:1` (3840x1080). UE4 ForestPack windowed 1280x720 chase cam. **Mission
+  console** (`scripts/mission_viewer.py`, since 2026-09-12, replaces
+  `multiview.py`/`camera_viewer.py` as the `--cameras` panel): ONE window with
+  TARGET box + FRONT + BOTTOM + LIDAR + telemetry + M = AUTO/MANUAL takeover
+  (in MANUAL, WASD/R-F/Q-E fly via nonblocking `moveByVelocityAsync`/`hoverAsync`;
+  local pushes `/tmp/aerovla_manual.json` to H100 over ssh; H100 `eval_aerovla.py`
+  `_manual_takeover_active()` blocks before `makeActions` until clear). TARGET
+  polls `/tmp/aerovla_target.json` (written per mission by
+  `EvalBatchState._write_target_beacon` on H100).
+  On this AirSim build **`simGetImages` (plural) RPCErrors; use per-camera
+  `simGetImage(cam, ImageType.Scene)`** (PNG bytes) — mission/multiview patched
+  accordingly. **Launch the server tool with CWD = `airsim_plugin/`** (default
+  `--root_path ../envs` is CWD-relative; from project root it silently skips
+  UE4 spawn while reporting success). Drone parked at `(150,150,-30)` returns
+  ~4980 lidar pts (near geometry); spawn/high altitude → 0 pts.
 - **Git sync (since 2026-09-10)**: both repos now track the personal fork
   `git@github.com:m-amin-sanati/AeroVLA.git` (added as `fork` remote; `origin` stays
   upstream `XuPeng23/AeroVLA`). Fork `main` is the single source of truth; local + H100
@@ -157,3 +176,26 @@ When something becomes deprecated or is replaced:
 - [ ] Relevant runbooks updated to match reality.
 - [ ] AGENTS.md §6 "current key context" refreshed if needed.
 - [ ] No secrets/keys committed (never log passwords, tokens, model paths with credentials).
+- **Drone manual flight (since 2026-09-12)**: use `scripts/drone_keyboard.py <port>`
+  (tkinter window on `:1`; WASD/arrows move, R/F up/down, Q/E yaw, space up, C
+  down, P pause toggle, +/-, Esc exit). Hard facts learned:
+  (a) This AirSim build's drone is a REAL multirotor that flies via motor control
+      (`move_path_by_actions` in `AirVLNSimulatorClientTool_AeroVLA.py`):
+      `enableApiControl`+`armDisarm`+`moveByVelocityAsync` (NED: vz<0 = up).
+      `simSetKinematics` teleport CANNOT fly it — vertical commands just fall
+      (z → thousands). Use the flyer script, not manual kinematics, for flight.
+  (b) Use NON-blocking `moveByVelocityAsync` (no `.join()`) in UI ticks or the
+      RPC wedges; `moveToZAsync` also works for altitude.
+  (c) `moveByVelocityAsync(0,0,0)` does NOT hold altitude here (sinks ~0.27 m/s);
+      to hover use `hoverAsync()`. In a periodic UI tick, gate on a `moving` flag:
+      moving → velocity cmd, idle → `hoverAsync()`.
+  (d) Stuck-key trap in tkinter: binding per-key `<Left>` etc. with a handler that
+      only ADDS to the keyset (no release) leaves the key set forever → the flyer
+      keeps commanding motion ("cycles" after release). Use ONE generic
+      `<KeyPress>`/`<KeyRelease>` pair and `keysym.lower()` add/discard (this is
+      what `drone_keyboard.py` does).
+  (e) If a drone is fallen/falling: freeze it with a zero-velocity
+      `KinematicsState` + `simSetKinematics(..., ignore_collision=True)` +
+      `simContinueForFrames(2)` + `simPause(True)` (the eval's `setPoses` pattern),
+      then unpause and fly. Spawn: ForestPack `(-86.12, 283.52, -11.13)` from
+      `data/meta/map_spawnarea_info.json`.

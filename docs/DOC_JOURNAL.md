@@ -764,3 +764,408 @@ eval launch remains the user's pending action.
   pending ForestPack eval (user action) — lidar now flows into eval `log/` output.
 - Update `docs/PROJECT_HANDOFF.md` + AGENTS.md §6 (done this session; verify
   after push).
+
+---
+
+## Session 2026-09-12 (part 2) — Live view verification on ForestPack + simGetImages bug hunt
+
+### Goal
+- Verify the launched UE4 ForestPack scene **renders** the three views: UE4 chase-cam
+  main/user window, the `scripts/multiview.py` window (drone cameras + lidar top-down).
+- Cross-check the carried-over eval launch readiness (user action pending).
+
+### What I did
+- Confirmed live stack: server (AirVLNSimulatorServerTool) pid, UE4 BrushifyForestPack
+  windowed 1280x720 at (+517,+164) on `:1`, multiview viewer — all running; drone parked
+  at `(150,150,-30)` → lidar 4974-4981 pts.
+- Diagnosed + fixed a **camera-capture bug** that broke `simGetImages` (plural).
+
+### Problems faced / solutions
+1. **`simGetImages` RPCError for all 5 cameras** while physics + lidar worked, and
+   `simGetCameraInfo` worked. Persisted across fresh UE4 restarts, reset, re-arms,
+   spawn/pose changes, and even after a full server+scene restart.
+   - Root causes (two stacked): **(a)** I relaunched the server from **project root**,
+     but the tool's `--root_path` defaults to `../envs` (relative) → `reopen_scenes`
+     "succeeded" (returned `[True,[...]]`) yet **silently skipped spawning UE4**
+     (`p_s.append(None)` path) because `../envs/...` didn't resolve. **Fix**: launch the
+     server with CWD = `airsim_plugin/` so `../envs` → `AeroVLA/envs` (see AGENTS §6
+     cmd); verified UE4 then spawned (pid 1806583).
+   - **(b)** Even with UE4 up, **`simGetImages` (list-request API) throws
+     `RPCError: ... not derived from std::exception`**, but **`simGetImage(cam,
+     ImageType)` (singular, returns PNG bytes) works** for all 5 cameras (256x256).
+   - **Fix**: patched `scripts/multiview.py` to use `simGetImage` per camera
+     (`fetch_drone_cams`, `fetch_scene` → `_png_to_ndarray`) instead of `simGetImages`.
+     Verified: viewer log empty (no recovery/errors), window renders main view (std ~89),
+     lidar panel (~215 mean), camera grid (std ~84) on the right half of `:1`.
+2. **Server RPC freeze mid-test**: wedged handler (wchan futex) after a stuck
+   `reopen_scenes`; entire single-threaded server became unresponsive. **Fix**: full
+   kill/relaunch from correct CWD; use client `timeout=` < server timeout so the shell
+   never hangs on RPC.
+
+### Current state
+- Working: server (pid 1806163) in `airsim_plugin/` (CWD-correct), UE4 ForestPack
+  windowed (:1, chase cam), multiview viewer (pid 1809895) with singular-API camera
+  fetch, drone at `(150,150,-30)` with live lidar 4981 pts.
+- `scripts/multiview.py` modified (simGetImage); syntax-checked; NOT yet committed.
+- Settings `airsim_plugin/settings/30001/settings.json` left in template-regenerated
+  state (Lidar1 + SpringArmChase); backup `settings.json.lidar-backup` = same content.
+
+### Next steps
+- Confirm 60s uptime of multiview (tick + log) then report to user.
+- Commit multiview fix (and note CWD gotcha) + push to fork, sync H100.
+- Update AGENTS.md §6 (CWD gotcha + simGetImage) + PROJECT_HANDOFF §12.
+- Pending user action: launch ForestPack eval (split.sh + H100 run_eval.sh).
+
+---
+
+## Session 2026-09-12 (part 3) — Drone keyboard flyer (`drone_keyboard.py`) + pose-control research
+
+### Goal
+- Let the user actually fly the drone manually (arrow keys in the UE4 window only
+  move the chase cam, since the sim is API-driven, not keyboard-driven).
+
+### What I did
+- Wrote `scripts/drone_keyboard.py`: a tkinter window that maps WASD/arrows to
+  movement, R/F to up/down, Q/E to yaw via `simSetKinematics` every 30 ms tick.
+- Discovered two hard requirements for moving the drone sanely on this build.
+- Launched it live (pid 1861931, window 560x300 at +50+119 on `:1`); verified
+  a controlled move = exactly speed*dt distance, z stable.
+
+### Problems faced / solutions
+1. **`simSetKinematics(pose, ignore_collision=True)` makes the drone NON-solid →
+   it free-falls/sinks through the map forever.** Symptom: drone z climbed 1.5 →
+   111 → 159 → 396 over seconds even idle; lidar/cam still "work" but it's below
+   ground. **Fix**: use `ignore_collision=False` so it rests on terrain.
+2. **Even with collisions on, the drone inherited the stored fall velocity** (z
+   kept moving when the sim was unpaused). **Fix**: pass a full `airsim.KinematicsState`
+   (position + orientation + `linear_velocity/angular_velocity = (0,0,0)`) to
+   `simSetKinematics`, NOT a bare `Pose`.
+3. **AirSim auto-pauses when the drone rests on the ground** (this build +
+   ExternalPhysicsEngine). If the flyer unpaused on idle ticks, the stored
+   velocity made it drift. **Fix**: flyer only unpauses while a movement key is
+   held; idle does nothing.
+
+### Current state
+- `scripts/drone_keyboard.py` (new, uncommitted): WASD/arrows=RFT/QE, space=up,
+  c=down, P toggle pause, +/- speed, Esc exit. Uses `KinematicsState` +
+  `ignore_collision=False`, only moves when a key is held.
+- Drone parked at ForestPack spawn `(-86.1, 283.5, -10.1)`, sim paused, stable.
+- Flyer running (pid 1861931). Multiview (pid 1833129) + UE4 (1822194) + server
+  (1821614) all up.
+
+### Next steps
+- Let user fly. If they want a visible drone-moving test, press keys in the flyer
+  window and watch engine chase cam + multiview cameras/lidar update.
+- (Optional) commit multiview + drone_keyboard + docs, push to fork, sync H100.
+- Update AGENTS.md §6 + PROJECT_HANDOFF §12 with the KinematicsState + collision
+  + auto-pause gotchas (below).
+
+---
+
+## Session 2026-09-12 (part 4) — F/up didn't work → root cause + real fix
+
+### Goal
+- User reported "when i try to go up with f it can't".
+
+### Diagnosis
+- Old `drone_keyboard.py` used `simSetKinematics` (teleport). Testing proved this
+  build's drone is a REAL multirotor relying on motor control; teleporting cannot
+  beat gravity, so vertical commands (both signs) produced downward drift/free-fall
+  (z went to +4000). "F can't go up" = the teleport approach is fundamentally broken
+  for altitude, not a key bug. (The earlier AGENTS.md gotcha claiming
+  `KinematicsState`+`ignore_collision=False` fixes drift was WRONG — that still
+  doesn't fly; the real flight is motor-control.)
+
+### Solution
+- Rewrote `scripts/drone_keyboard.py` to use the SAME motor-control API the eval
+  uses (`AirVLNSimulatorClientTool_AeroVLA.py` `move_path_by_actions`):
+  `enableApiControl(True)` + `armDisarm(True)` + non-blocking `moveByVelocityAsync`
+  per 30 ms tick + `rotateToYawAsync` for Q/E. NED: `vz<0` = up (R/Space), `vz>0` = down (F/C).
+- Verified live: `moveToZAsync(-20)` climbed z −9.3 → −19.0; non-blocking
+  `moveByVelocityAsync(0,0,-3,1.0)` climbed −19.1 → −21.7 and returned in 0 ms (no hang).
+- Recovering a wrongly-fallen drone: freeze with `KinematicsState` zero-velocity +
+  `simSetKinematics(..., ignore_collision=True)` + `simContinueForFrames(2)` +
+  `simPause(True)` (same as eval `setPoses`), then unpause and fly.
+- Do NOT `.join()` flight commands in a UI tick (hangs); use fire-and-forget.
+
+### Current state
+- `scripts/drone_keyboard.py` rewritten (motor-control). Running pid 1929914,
+  drone at z≈−14.5 altitude, sim unpaused, flyer + multiview windows up.
+- Old gotchas in AGENTS.md §6 + PROJECT_HANDOFF §13/§13 need correcting (next).
+
+### Next steps
+- Correct the stale simSetKinematics docs (AGENTS.md §6 gotcha, PROJECT_HANDOFF).
+- Let the user try R (up) / F (down) again.
+
+## Session 2026-09-12 (part 5) — even after motor-control fix: drone sinks, can't hover
+
+### Problem
+- With the motor-control flyer working, freeing a vertical key still lost altitude:
+  `moveByVelocityAsync(0,0,0)` (hover-by-zero-velocity) does NOT hold altitude on
+  this build — measured steady sink of ~0.27 m/s (z −16.6 → −14.1 over 5.4 s).
+
+### Solution
+- Use `hoverAsync()` when idle (moves → one hover tick holds). Measured clean:
+  climb vz=−3 → −14.5→−23.2 in 3s; then hoverAsync 4s → drift 0.00 m. Perfect.
+- Flyer `_apply()` rewritten: `moving` flag; if moving → non-blocking
+  `moveByVelocityAsync(vx,vy,dz,duration=0.1,MaxDegreeOfFreedom,yaw_mode=current)`;
+  if idle → `hoverAsync()`.
+
+### Gotchas
+- A live flyer sending hoverAsync every 30 ms WILL defeat standalone test scripts
+  (each hover cancels your test velocity command) — kill the flyer (pid in
+  /tmp/aerovla_flyer.pid) before running headless flight tests, restart after.
+
+### Current state
+- Flyer pid 1943022 (hover fix), drone airborne and holds altitude. Uncommitted:
+  `M scripts/drone_keyboard.py`, `M AGENTS.md`, `M docs/*`.
+
+### Next steps
+- User to test R=up / F=down then release → should hold altitude.
+- Commit + push fork + sync H100 when user is happy.
+
+## Session 2026-09-12 (part 6) — lateral "cycles a lot" on release: stuck arrow keys
+
+### Problem (user report)
+- After moving left/right then releasing, the drone "hover and cycle a lot", doesn't
+  stop immediately.
+
+### Diagnosis
+- Clean headless test (flyer stopped): after left 1.5s + hover, lateral position
+  stabilized within ±0.15 m and v within ±0.15 — hover itself was fine.
+- Real culprit in the flyer script: the dedicated per-key bindings for arrows/space
+  (`<Up> <Down> <Left> <Right> <space>` → `_on_key_guard` → `_press` only ADDED the
+  capitalized keysym like `"Left"` to `self.keys`) and there was NO release handler
+  for them. The generic `<KeyRelease>` strips only the lowercase form. So an arrow
+  key stayed `"Left"` in `self.keys` **forever** → `_apply` kept commanding lateral
+  velocity every tick → drift + hover fighting it = the "cycle".
+- Also dropped `+`/`-` speed controls that were only wired via those broken bindings.
+
+### Solution
+- Removed the broken per-key bindings and `_on_key_guard`/`_press`. Now a single
+  generic `<KeyPress>`/`<KeyRelease>` handler (`_on_key`, keysym.lower()) manages
+  add/remove for ALL keys (arrows included). BUG-FIX:
+  `scripts/drone_keyboard.py` (removed bind lines 77-79, guard/press methods;
+  `_on_key` handles both press+release).
+- Re-added `+`/`-` speed up/down in `_apply` via keysym (single-step, removed after
+  use like `p`).
+
+### Current state
+- Flyer pid 1948191 (fix live, window on :1).
+
+### Next steps
+- User re-test: press Left/Right (or W/A/S/D), release → drone should stop
+  immediately (hover holds now that key actually clears).
+- Commit + push fork + sync H100 when satisfied.
+
+## Session 2026-09-12 (part 7) — WASD jitter (step-like) + lidar direction
+
+### Problem
+- User: W/A/S/D motion is jittery / step-by-step, not smooth.
+- User: "what direction does lidar capture points?"
+
+### Jitter diagnosis & fix
+- `moveByVelocityAsync(..., duration=0.1)` re-sent every 30ms tick → 100ms velocity
+  bursts separated by controller decel gaps → visible stepping.
+- Fix: `duration=0.5` (still refreshed every 30ms) so the controller holds a
+  continuous velocity = smooth glide. Also lowered default `--speed` 5→3 m/s.
+  `scripts/drone_keyboard.py:167-180` (+ argparse default line 208). Flyer pid
+  1955136.
+
+### Lidar direction (verified live, SensorLocalFrame)
+- Config (`AirVLNSimulatorServerTool.py:236-252`): 16ch, Range 100m, 100k PPS,
+  10 rot/s, HFOV ±90°, VFOV −5..−35°, zero mount rot, output in body/local frame.
+- Live sample (exists 4490 pts): all point z > 0 (min 0.0, mean +4.7, max 22) in
+  local frame (NED, +z=down) → the cone points DOWNWARD-only (nothing above
+  horizon). Effectively: downward-looking, forward-tilted fan that spins 10 Hz
+  around drone vertical axis; covers ground ahead-of and below drone, never above.
+- So: lidar captures the terrain/objects BELOW and slightly AHEAD of the drone in
+  whatever direction the drone is yawed at.
+
+## Session 2026-09-12 (part 8) — yaw broken + lidar FOV to 0°..90° vertical
+
+### Problem (user reports)
+1. Yaw (Q/E) no longer works after the jitter fix.
+2. Want lidar vertical FOV changed from −5°..−35° (downward fan) to 0°..90°
+   (horizontal front → straight-down bottom).
+
+### Yaw root cause & fix
+- `_apply` called `rotateToYawAsync(target)` then IMMEDIATELY `moveByVelocityAsync(..., yaw_mode=YawMode(is_rate=False, yaw_or_rate=current_yaw))`.
+  The velocity command's YAW-HOLD override cancelled the rotation every tick → never turns.
+- Fix (`scripts/drone_keyboard.py:168-180`): drive yaw INSIDE the velocity command —
+  `yaw_mode` = rate mode (`is_rate=True, yaw_or_rate=d_yaw`) while turning, else hold
+  current yaw. One command per tick, no fight.
+
+### Lidar FOV change (verified live)
+- Template `AirVLNSimulatorServerTool.py:245-246`:
+  `VerticalFOVUpper: 0.0`, `VerticalFOVLower: -90.0` (0° front/horizontal → 90° straight down).
+- Settings are baked at env launch (server `_open_scenes` writes
+  `airsim_plugin/settings/<port>/settings.json` from template, lines 577-584, then
+  launches UE4 with it). Server does NOT respawn UE4 on start → must call
+  `reopen_scenes`/`_open_scenes` client RPC to regenerate + relaunch.
+- Full restart: killed server+UE4+flyer+multiview, relaunched server (CWD
+  `airsim_plugin/`), called `reopen_scenes('127.0.0.1',[('BrushifyForestPack',0)])`,
+  relaunched flyer+multiview.
+- Verified: settings/30001/settings.json now `VerticalFOVUpper:0.0 / Lower:-90.0`,
+  UE4 launched with it, 4988 pts near geometry (Drone had spawned at
+  (0,0,12004) → 0 pts; moved to (-86.12,283.52,-11.13) → 4988 pts, z 0..7).
+- Render: fix +45° lidar top-down in `scripts/multiview.py`.
+
+### Current state
+- Server pid 1966943, UE4 3 pids (~1969720/21/28), flyer 1975892, multiview 1975894.
+- Settings regenerated with 0°→90° lidar FOV.
+
+### Next steps
+- User to test Q/E yaw (should turn smoothly now) and re-sample lidar at a
+  location where steep near-vertical geometry exists to see the 0°..90° sweep.
+
+## Session 2026-09-12 (part 9) — lidar half-sphere (360° horizontal)
+
+### Change
+- Reinforced the 0°→90° vertical fan to a full DOWNWARD HALF-SPHERE:
+  `HorizontalFOVStart: -180.0`, `HorizontalFOVEnd: 180.0` (template
+  `AirVLNSimulatorServerTool.py:243-244`), keeping
+  `VerticalFOVUpper: 0.0 / Lower: -90.0`.
+- Applied live: full stack restart + `reopen_scenes` regen; verified baked in
+  `settings/30001/settings.json` (`-180.0 .. 180.0`).
+
+### Verified (live sample at (-86.1,283.5,-11.1))
+- 10161 pts; x min=-61..max=24, y min=-4..max=97 → all directions.
+- Per-quadrant: front 5298 / back 4863 / right 4828 / left 5333 → uniform 360°.
+- z min=0 (horizon) .. max=7.2 (below) → full vertical sweep to straight down.
+- => downward half-sphere confirmed.
+
+### Gotcha (repeated)
+- Drone spawns high (0,0,~900-12000) on fresh UE4 launch → lidar 0 pts. Teleport
+  to near-geometry spot (-86.12,283.52,-11.13) before sampling.
+
+### Current state
+- Server pid 1988533, flyer 1989751, multiview 1989753 (all `--windowed`, :1).
+- Templates: HFOV ±180°, VFOV 0..-90°.
+
+### Next steps
+- User validates multiview top-down lidar pane shows circular footprint.
+- Commit + push fork + sync H100 when user is done testing.
+
+## Session 2026-09-12 (part 10) — spawned vehicle objects in ForestPack (test)
+
+### What
+- Added vehicle objects into the live ForestPack sim via the eval's own
+  `simSpawnObject` path (`AirVLNSimulatorClientTool_AeroVLA.py:513`).
+- `air_sim_client_script`: spawned
+  - `my_object_0` = `AASM_FiretruckParked` @ (-86.1, 283.5, -9.0)
+  - `my_object_1` = `AASM_LincolnParked` @ (-71.1, 283.5, -11.0)
+  both `physics_enabled=False`, scale 1.
+- Verified: `simGetObjectPose('my_object_1')` returns (-71.1,283.5,-11.0);
+
+### Key facts learned
+- Asset catalog: `data/meta/object_description.json` (94 entries incl. vehicles
+  SM_AudiA2, SM_EtronParked, SM_Cybertruck, SM_TeslaM3_parked, SM_Harley, etc.).
+- Spawn spot data: `data/meta/map_spawnarea_info.json` — row layout:
+  idx [0..2]=area min, [3..5]=area max, [6..8]=?, [9..11]=object xyz,
+  [12..15]=quaternion (w,x,y,z), [16]=asset_name, [17]=scale.
+- **Brushify maps use `AA` prefix**: asset `AASM_*` (e.g. AASM_FiretruckParked);
+  Carla maps plain `SM_*`. Eval strips `AA` at env_uav.py:143, but the live
+  simSpawnObject needs the full name.
+- ForestPack spawn spot row0 == drone spawn (-86.12, 283.52, -11.13).
+
+### Problem
+- After spawning + simContinueForFrames + simPause(True), drone ended up at
+  (321,445,-0.2) (drifted far); cause not fully chased (flyer hoverAsync may
+  fight, or physics after unpause). Not blocking.
+
+### Next
+- User to confirm vehicles render in multiview front/down cams.
+- If useful: `setObjects` in the client already takes object_list with
+  asset_name/pose/scale — eval-integratable.
+
+## Session 2026-09-12 (part 11) — real-time multiview + BottomCamera + 5x lidar
+
+### User request
+Cameras must refresh in real time; add a bottom camera; increase lidar points.
+
+### Changes
+1. **Lidar density ↑** (`AirVLNSimulatorServerTool.py:265-267`):
+   `NumberOfChannels` 16->32, `PointsPerSecond` 100000->500000 (5x).
+   Verified: 50868 pts at forest spot (was ~10k).
+2. **BottomCamera added** (`AirVLNSimulatorServerTool.py:172`): straight-down
+   (Pitch -90), 512x512, scene+seg. Verified: returns 595KB scene image.
+3. **Multiview real-time** (`scripts/multiview.py`, rewritten):
+   - `WorkerPool`: 8 dedicated AirSim clients (one per RPC worker) +
+     ThreadPoolExecutor; main/5 cams/bottom/lidar fetched in PARALLEL each frame,
+     no single camera blocks the window.
+   - Tick 60ms -> 40ms; `_schedule` re-arms every frame; per-future timeout so a
+     stalled cam can't hang the frame.
+   - New dedicated **BOTTOM** panel (row 1, right column) fed by BottomCamera.
+   - Layout: left MAIN | right col [LIDAR, BOTTOM, 5-CAM grid].
+
+### Restart applied (settings baked at launch)
+- torn down server+UE4+flyer+multiview -> relaunched server (CWD airsim_plugin/,
+  pid 2038343) -> reopen_scenes -> flyer (2043363) + multiview (2043365).
+- Verified baked settings: NumberOfChannels 32, PointsPerSecond 500000,
+  BottomCamera present. Drone spawned high (0,0,674) again -> teleported to
+  (-86.12,283.52,-11.13) for the lidar sample.
+
+### Gotchas
+- High spawn on fresh UE4 launch (0,0,~600-12000) -> lidar 0; teleport near geometry.
+- BottomCamera REQUIRES the settings regen + UE4 restart (camera list baked at launch).
+
+### Next
+- User to eyeball the fresh multiview (bottom pane + denser lidar cloud).
+- Commit + push fork + sync H100 after user sign-off.
+
+## Session 2026-09-12 (part 12) — Mission Console (Option A) + manual takeover
+
+### Goal
+Replace the active 6-camera panel during a running eval (`camera_viewer.py`,
+launched by `split.sh --cameras` as 6-cell FRONT+DOWN/LEFT+RIGHT/REAR) with the
+consolidated **mission console**: per-episode TARGET box + FRONT + BOTTOM + LIDAR
++ telemetry + AUTO/MANUAL takeover (M). User approved Option A and said we can
+kill the running eval.
+
+### What I did
+1. **Confirmed active panel**: `split.sh 30000 BrushifyForestPack --windowed --cameras`
+   (pid 2095490, 34 min in) → server 2095516 + `scripts/camera_viewer.py 30001`
+   (pid 2095810) — that's the "6 camera view". `multiview.py` 2067889 was stale
+   (prior session, unrelated). H100 eval live: `Completed: 6 / 444`.
+2. **Killed the eval** per user OK: `kill $(cat /tmp/aerovla_split_30000.pid)` →
+   local server/UE4/tunnel/viewer + H100 eval all down (ports free, H100 pid gone).
+3. **New `scripts/mission_viewer.py`** (untracked) — consolidated console:
+   - TARGET box (polls `/tmp/aerovla_target.json` local-first, else ssh cat H100)
+   - FRONT (drone view) + BOTTOM (BottomCamera) + LIDAR top-down (height colored,
+     magenta crosshair at target x/y)
+   - telemetry line (pos/speed/mode/paused, key legend)
+   - `M` toggles AUTO/MANUAL; MANUAL uses motor-control flight (nonblocking
+     `moveByVelocityAsync`, hover when idle) — lifts the flyer logic from
+     `drone_keyboard.py` into this one window.
+   - Reuses per-camera `simGetImage` (plural RPCErrors on this build — AGENTS.md §6).
+4. **H100-side hooks**:
+   - `src/vlnce_src/closeloop_util.py`: `EvalBatchState.__init__` →
+     `_write_target_beacon(env_batchs)` (line 135/150) writes per-mission
+     `/tmp/aerovla_target.json` (asset_name, object_position, object_desc,
+     instruction, target_positions). Added `import time`.
+   - `src/vlnce_src/eval_aerovla.py`: `_manual_takeover_active()` + a
+     `while _manual_takeover_active(): time.sleep(0.2)` before `makeActions`
+     (blocks autopilot while an operator flies; resumes + re-syncs on clear).
+5. **`scripts/split.sh`** `--cameras` now launches `mission_viewer.py` instead of
+   `camera_viewer.py`; help text + summary updated.
+6. py_compile OK on all patched files; core viewer functions unit-exercised
+   (lidar_to_image, _png_to_ndarray); verified ssh push (`/tmp/aerovla_manual.json`
+   written + REMOVED) and beacon cat path (`NO_BEACON_YET` since eval stopped).
+
+### Problems
+- `time` not imported in closeloop_util.py → added.
+- Viewer must use per-camera `simGetImage` not plural `simGetImages` (build RPCError).
+- Manual flag + target beacon cross the tunnel: tunnels are port-only, so the
+  viewer pushes flag/pulls beacon via direct local→H100 ssh (works; tested).
+
+### Current state
+- All prior eval/viewer processes stopped. Code changes in place + py_compile clean.
+- `scripts/camera_viewer.py` superseded but kept (mark SUPERSEDED in its docstring,
+  and in the runbook below). Files added: `scripts/mission_viewer.py`.
+- Next: commit + push fork, sync H100, relaunch `split.sh 30000 BrushifyForestPack --windowed --cameras`.
+
+### Next steps
+- Commit `M AGENTS.md, split.sh, closeloop_util.py, eval_aerovla.py, docs/*`,
+  `?? mission_viewer.py, drone_keyboard.py, multiview.py`.
+- Push fork, sync H100 (`git fetch fork && git reset --hard fork/main`), relaunch eval.

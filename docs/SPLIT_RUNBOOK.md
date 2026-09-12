@@ -110,13 +110,22 @@ server-render-only and harmless to the client process — leave them.
 > ```bash
 > # LOCAL (a non-root user; UE4 refuses root):
 > bash scripts/split.sh 30000 --windowed --cameras
-> #   -> starts local server + reverse tunnel + camera viewer,
+> #   -> starts local server + reverse tunnel + mission console (NEW in 2026-09-12:
+> #      target box + FRONT/BOTTOM/LIDAR + telemetry + M = AUTO/MANUAL takeover;
+> #      replaces the old 6-camera camera_viewer.py),
 > #   -> auto-runs `ssh H100 bash /workspaces/AeroVLA/scripts/run_eval.sh 30000 /tmp/split_eval.log`,
 > #      confirms remote pid via /tmp/aerovla_eval_30000.pid,
 > #   -> writes /tmp/aerovla_split_30000.pid
 > # Or detached (verified launch pattern):
 > # DISPLAY=:1 setsid nohup bash scripts/split.sh 30000 --windowed --cameras > /tmp/aerovla_split_real3.log 2>&1 &
-> ```
+> #
+> # MISSION CONSOLE controls:
+> #   M  toggle AUTO (autopilot; eval loop runs) / MANUAL (you fly via WASD/R-F/Q-E,
+> #      local console pushes /tmp/aerovla_manual.json to H100; eval loop blocks
+> #      before makeActions until you flip back to AUTO)
+> #   WASD/arrows move, R/F up/down, Q/E yaw, +/- speed, P pause, Esc exit
+> #   TARGET box updates per episode via ssh-poll of H100 /tmp/aerovla_target.json
+> #      (written by EvalBatchState._write_target_beacon each mission).
 >
 > **STOP (ONE command — tears down local server + tunnel + viewer + remote H100 eval):**
 > ```bash

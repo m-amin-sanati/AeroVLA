@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import json
 import torch
 import tqdm
 
@@ -26,6 +27,21 @@ warnings.filterwarnings("ignore", message=".*meshgrid.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*resume_download.*", category=FutureWarning)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("torch").setLevel(logging.ERROR)
+
+
+def _manual_takeover_active():
+    """Return True when a local operator has taken manual control.
+
+    The local mission viewer writes /tmp/aerovla_manual.json on the H100 (via the
+    reverse tunnel / split forwarding). While it is {'manual': true} the eval loop
+    blocks before each makeActions so the autopilot does not fight the human; the
+    operator flies with the mission console and flips back to AUTO when done.
+    """
+    try:
+        with open('/tmp/aerovla_manual.json', 'r') as f:
+            return bool(json.load(f).get('manual', False))
+    except Exception:
+        return False
 
 
 def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, eval_save_dir):
@@ -69,6 +85,13 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                     episodes=batch_state.episodes,
                     rot_to_targets=rot_to_targets
                 )
+
+                # Manual takeover: if a local operator is flying, block here so the
+                # autopilot does not fight the human. We keep re-reading the flag and
+                # only resume once the operator hands control back (flag cleared).
+                while _manual_takeover_active():
+                    time.sleep(0.2)
+
                 eval_env.makeActions(batch_actions)
 
                 time.sleep(0.01)

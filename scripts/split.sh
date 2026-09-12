@@ -29,11 +29,13 @@
 #                        AEROVLA_MAP so run_eval.sh targets the right env.
 #   --windowed           launch UE4 in a visible window instead of offscreen,
 #                        so you can SEE the scene live.
-#   --cameras            ALSO show the live drone camera views (front/left/
-#                        right/rear/down) in a local window (requires local
-#                        DISPLAY). Picks up the first scene port
-#                        (=LOCAL_SERVER_PORT+1). Requires the aero_vla conda
-#                        env (airsim + Pillow + tkinter).
+#   --cameras            ALSO open the mission console in a local window: one
+#                        consolidated view (Option A) with per-episode TARGET box
+#                        + FRONT + BOTTOM + LIDAR + telemetry + AUTO/MANUAL
+#                        takeover (M = manual flight via WASD). Replaces the old
+#                        6-camera viewer. Picks up the first scene port
+#                        (=LOCAL_SERVER_PORT+1). Requires a local DISPLAY and the
+#                        aero_vla conda env (airsim + Pillow + tkinter).
 #   --no-eval            do NOT auto-start the H100 eval client (just server+
 #                        tunnel+viewer); start run_eval.sh manually later.
 # ============================================================================
@@ -88,7 +90,7 @@ echo "  MAP                : ${MAP}"
 echo "  H100 host          : ${H100}"
 echo "  Project            : ${ROOT}"
 echo "  UE4 mode           : $([ ${WINDOWED} -eq 1 ] && echo 'WINDOWED (visible)' || echo 'offscreen')"
-echo "  Camera viewer      : $([ ${CAMERAS} -eq 1 ] && echo 'ON (live drone cams in local window)' || echo 'off')"
+echo "  Camera viewer      : $([ ${CAMERAS} -eq 1 ] && echo 'ON (mission console: target+front+bottom+lidar, M=takeover)' || echo 'off')"
 echo "  H100 eval client   : $([ ${NO_EVAL} -eq 1 ] && echo 'MANUAL (--no-eval)' || echo 'AUTO via run_eval.sh')"
 echo "=============================================="
 
@@ -236,32 +238,33 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 4. Optional: live drone camera viewer (LOCAL window, read-only)
-#    Connects to the first scene's AirSim API port (=LOCAL_PORT+1) as an
-#    independent client and shows front/left/right/rear/down feeds live.
+# 4. Optional: live mission console (LOCAL window, read-only + manual takeover)
+#    Single consolidated window (Option A): TARGET box + FRONT + BOTTOM + LIDAR
+#    + telemetry + AUTO/MANUAL toggle (M). Replaces the old 6-camera viewer.
+#    Connects to the first scene's AirSim API port (=LOCAL_PORT+1).
 # --------------------------------------------------------------------------
 if [ ${CAMERAS} -eq 1 ]; then
   SCENE_PORT=$((LOCAL_PORT + 1))
   VIEWER_PY="${SERVER_PYTHON}"   # same aero_vla env has airsim+Pillow+tkinter
-  echo "==> Starting live camera viewer on AirSim :${SCENE_PORT} ..."
+  echo "==> Starting mission console on AirSim :${SCENE_PORT} ..."
   if [ -n "${DISPLAY:-}" ]; then
     nohup env DISPLAY="${DISPLAY}" "$VIEWER_PY" \
-      "${ROOT}/scripts/camera_viewer.py" "${SCENE_PORT}" --retry 120 \
+      "${ROOT}/scripts/mission_viewer.py" "${SCENE_PORT}" --retry 120 \
       > /tmp/aerovla_cameras.log 2>&1 &
     echo $! > /tmp/aerovla_cameras.pid
     VIEWER_PID="$(cat /tmp/aerovla_cameras.pid 2>/dev/null || true)"
     sleep 2
     if [ -z "$VIEWER_PID" ] || ! kill -0 "$VIEWER_PID" 2>/dev/null; then
-      echo "    WARNING: camera viewer failed to start. See /tmp/aerovla_cameras.log"
+      echo "    WARNING: mission console failed to start. See /tmp/aerovla_cameras.log"
       tail -20 /tmp/aerovla_cameras.log
     else
-      echo "    camera viewer pid ${VIEWER_PID}"
+      echo "    mission console pid ${VIEWER_PID}"
       echo "    log: /tmp/aerovla_cameras.log"
-      echo "    (scene camera feed window opened; press q/close to stop later)"
+      echo "    (target + front/bottom/lidar; M toggles AUTO/MANUAL, WASD flies)"
     fi
   else
-    echo "    SKIP: no \$DISPLAY on this session - start viewer manually with:"
-    echo "    DISPLAY=:0 $VIEWER_PY ${ROOT}/scripts/camera_viewer.py ${SCENE_PORT}"
+    echo "    SKIP: no \$DISPLAY on this session - start console manually with:"
+    echo "    DISPLAY=:0 $VIEWER_PY ${ROOT}/scripts/mission_viewer.py ${SCENE_PORT}"
   fi
 fi
 

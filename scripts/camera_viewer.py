@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Live drone camera viewer for a running split eval.
+"""SUPERSEDED 2026-09-12 - see scripts/mission_viewer.py (Option A console:
+target + FRONT/BOTTOM/LIDAR + AUTO/MANUAL takeover). Kept for reference.
+
+Live drone camera viewer for a running split eval.
 
 Connects to the LOCAL AirSim API port (the UE4 scene port assigned by the
 server, default 30001) as an independent read-only client and shows the drone

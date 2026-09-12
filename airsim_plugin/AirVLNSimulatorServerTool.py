@@ -169,6 +169,32 @@ AIRSIM_SETTINGS_TEMPLATE = {
             }
           ]
         },
+        "BottomCamera": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0,
+          "Pitch": -90,
+          "Roll": 0,
+          "Yaw": 0,
+          "CaptureSettings": [
+            {
+              "ImageType": 0,
+              "Width": 512,
+              "Height": 512,
+              "FOV_Degrees": 90,
+              "AutoExposureMaxBrightness": 1,
+              "AutoExposureMinBrightness": 0.03
+            },
+            {
+              "ImageType": 2,
+              "Width": 512,
+              "Height": 512,
+              "FOV_Degrees": 90,
+              "AutoExposureMaxBrightness": 1,
+              "AutoExposureMinBrightness": 0.03
+            }
+          ]
+        },
         "FrontCameraRecord": {
           "X": 1,
           "Y": 0,
@@ -236,14 +262,14 @@ AIRSIM_SETTINGS_TEMPLATE = {
           "Lidar1": {
                 "SensorType": 6,
                 "Enabled" : True,
-                "NumberOfChannels": 16,
+                "NumberOfChannels": 32,
                 "Range": 100.0,
-                "PointsPerSecond": 100000,
+                "PointsPerSecond": 500000,
                 "RotationsPerSecond": 10,
-                "HorizontalFOVStart": -90.0,
-                "HorizontalFOVEnd": 90.0,
-                "VerticalFOVUpper": -5.0,
-                "VerticalFOVLower": -35.0,
+                "HorizontalFOVStart": -180.0,
+                "HorizontalFOVEnd": 180.0,
+                "VerticalFOVUpper": 0.0,
+                "VerticalFOVLower": -90.0,
                 "X": 0, "Y": 0, "Z": 0,
                 "Roll": 0, "Pitch": 0, "Yaw": 0,
                 "DataFrame": "SensorLocalFrame",
