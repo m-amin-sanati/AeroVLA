@@ -1714,3 +1714,65 @@ rendering bugs surfaced once it connected to a real scene + beacon.
 - Launch real Option A run on `dataset_raw`/`data/aerovla_train_dataset.json`
   with the full settings (MICRO_BATCH=2, GRAD_ACCUM=8, lora r64 α128, bf16).
 - Then start Option B (InfoNCE pre-alignment).
+
+---
+
+## Session 2026-09-13 PM — Launch real Option A BC-NLL training on ForestPack split
+
+### Goal
+Build the ForestPack training split and launch the real `src/train_step_a.py`
+run on the user's own AirSim episodes on the H100; then Option B.
+
+### What you did
+- **Built the split** with `scripts/build_training_split.py` (reads only
+  `merged_data.json` per episode, derives fwd/down/yaw labels from
+  `trajectory_raw_detailed` between sampled `index` keyframes): wrote
+  `data/aerovla_train_dataset_forestpack.json` = **27,885 samples / 446 episodes**
+  (20.9 MB), skipping 2 episodes with no `merged_data.json`.
+- **Validated dataset load** (`/tmp/validate_split*.py` on H100): samples load
+  through `UAVLiDARDataset(data_root=./dataset_raw, require_lidar=False)`; labels
+  finite; images 448x224; collator inputs all finite.
+- **Fixed 2 training bugs found by a `--micro_batch 2` memcheck**:
+  1. `UAVLiDARCollator._tokenize` prompt-probe tokenize had no
+     `padding=` → `ValueError: Unable to create tensor ... excessive nesting`
+     on any batch > 1 with variable-length prompts. Fix: `padding="longest"`
+     on the prompt-length probe (`datasets/uav_lidar_dataset.py:686`).
+  2. `tokenizer_max_length=96` (collator default) was smaller than the ~110-token
+     AeroVLA instructions, so `mask_prompt=True` truncated away EVERY action token
+     → all labels `-100` → cross-entropy NaN. Fix: pass
+     `tokenizer_max_length=256` to the collator in `src/train_step_a.py:225`.
+- **Committed & pushed** `77bf2b2` to `fork` (`scripts/build_training_split.py` +
+  both fixes). Local 15/15 tests pass. H100 synced via `git fetch fork &&
+  git reset --hard fork/main`.
+- **Launched the real run** (H100, `nohup`, pid visible via `pgrep -af
+  train_step_a.py`, log `/tmp/train_stepa.log`):
+  ```
+  .venv/bin/python -u src/train_step_a.py --model_path /workspaces/AeroVLA/openvla-7b \
+    --data_root /workspaces/AeroVLA/dataset_raw \
+    --split_json ./data/aerovla_train_dataset_forestpack.json \
+    --output_dir ./checkpoints/aero_vla_step_a \
+    --micro_batch 2 --grad_accum 8 --lora_r 64 --lora_alpha 128 \
+    --cem_num_depth_samples 32 --max_steps 100000 --save_steps 2000 --save_total_limit 5
+  ```
+
+### Problems faced
+- `loss=nan` at `--micro_batch 2` even though the micro_batch-1 smoke was finite.
+- Every row of the collator labels was fully masked (`non_masked=0`).
+
+### Solutions applied
+- Root causes above → both fixes committed. Verified on H100 with a probe
+  (`/tmp/full_fwd2.py`): labels `non_masked=10/row`, `loss=10.99` finite, logits
+  0 NaN. Then full `train_step_a.py --micro_batch 2` memcheck: losses 11.00→9.18
+  finite.
+
+### Current state
+- **Real run LIVE on H100**: `dataset size=27885`, `trainable=252,167,872
+  (3.24%)`, losses descending 11.12 → 1.89 by step 350, ~0.58 s/step, capped at
+  `8710` total steps (5 epochs × ~1742 opt steps) → ~1.5 h runtime.
+- `checkpoints/aero_vla_step_a/` is the output; 5.5 GB disk caution noted.
+
+### Next steps
+- Monitor run; check `grep stepA /tmp/train_stepa.log` for descending losses.
+- Next checkpoint saved at step 2000 (`checkpoints/aero_vla_step_a/step_2000`).
+- Then start Option B (InfoNCE pre-alignment → BC fine-tune).
+- Update `docs/PROJECT_HANDOFF.md` + this journal at session end.

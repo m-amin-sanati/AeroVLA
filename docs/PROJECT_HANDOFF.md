@@ -723,3 +723,45 @@ Mechanism of NaN entry: conv_stack BN has weight/bias ~8e35; with a non-zero BEV
 - `models/aerial_vla_model.py` (+`reset_fusion_parameters`, +`import math`)
 - `src/train_step_a.py` (+reset call after `get_peft_model`)
 - `tests/test_aerovla_3d_fusion.py` (+2 tests)
+
+## §14e (2026-09-13) ForestPack training split + 2 batch>1 fixes + REAL Option A run LIVE
+
+### ForestPack training split (committed `77bf2b2`)
+- `scripts/build_training_split.py` — reads only `envs/data_raws/BrushifyForestPack/*/merged_data.json`,
+  derives `fwd/down/yaw` labels from `trajectory_raw_detailed` between sampled `index` keyframes,
+  emits the `{traj_rel_dir, img_name, instruction, label, is_last_step, is_penultimate}` schema.
+- Output on H100: `data/aerovla_train_dataset_forestpack.json` = **27,885 samples / 446 episodes**
+  (20.9 MB); skipped `02a15abe-…` and `05305fa0-…` (no merged_data.json).
+- Instructions are ~110 tokens; old logs have no `lidar` key → `require_lidar=False` empty-cloud fallback.
+
+### Fix 1 — collator crash on batch>1 (`datasets/uav_lidar_dataset.py:686`)
+- **Problem**: `UAVLiDARCollator._tokenize` prompt-length probe had no `padding` → on the first
+  `--micro_batch 2` run: `ValueError: Unable to create tensor, you should probably activate
+  truncation and/or padding … excessive nesting (inputs type list where int expected)`.
+- **Fix**: added `padding="longest"` to the prompt probe so the max prompt length in the batch is masked.
+
+### Fix 2 — NaN loss (all labels masked) (`src/train_step_a.py:225`)
+- **Problem**: with `tokenizer_max_length=96` (collator default), the ~110-token instructions + action
+  exceeded 96 → `mask_prompt=True` masked the ENTIRE sequence → all labels `-100` → cross-entropy NaN.
+  Diagnosis: `/tmp/label_probe.py` showed `non_masked=0` for every row; prompt probe showed
+  `full_len=120 prompt_len=110 max_length=96` → action tokens truncated away.
+- **Fix**: pass `tokenizer_max_length=256` to the collator in `train_step_a.py`.
+- **Verified**: `/tmp/full_fwd2.py` → `non_masked=10/row`, `loss=10.99` finite, logits 0 NaN;
+  full `train_step_a.py --micro_batch 2` memcheck → losses 11.00→9.18 finite.
+
+### REAL RUN — LIVE on H100 (started this session)
+- Command (see DOC_JOURNAL session entry). Log: `/tmp/train_stepa.log`.
+- `dataset size=27885`, `trainable=252,167,872 / 7,792,888,960 (3.24%)`.
+- Losses descending: 11.12 → 1.89 by step 350; ~0.58 s/step; capped at **8710 total steps**
+  (5 epochs × ~1742 opt steps) ≈ **~1.5 h runtime**.
+- Output dir `checkpoints/aero_vla_step_a/` (LoRA adapters; does NOT touch the original
+  `checkpoints/` LoRA). Watch: `grep stepA /tmp/train_stepa.log`.
+
+### Files changed (commit `77bf2b2`)
+- `datasets/uav_lidar_dataset.py` (+`padding="longest"`)
+- `src/train_step_a.py` (+`tokenizer_max_length=256`)
+- `scripts/build_training_split.py` (new)
+
+### Next steps
+- Monitor the live run; first checkpoint at step 2000.
+- Then Option B (InfoNCE pre-alignment → BC fine-tune).
