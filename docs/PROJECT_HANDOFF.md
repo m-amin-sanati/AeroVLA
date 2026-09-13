@@ -105,6 +105,7 @@ Git status: 5 modified tracked files + several untracked new files/dirs.
 | `src/vlnce_src/closeloop_util.py` | **2026-09-12 (part 12, `f76f09f`):** `EvalBatchState.__init__` → `_write_target_beacon(env_batchs)` (calls at line 135, def at 150): writes per-mission `/tmp/aerovla_target.json` (asset_name w/ `AA` prefix, object_position, object_desc, instruction, target_positions). Added `import time`. |
 | `src/vlnce_src/eval_aerovla.py` | **2026-09-12 (part 12, `f76f09f`):** `_manual_takeover_active()` reads `/tmp/aerovla_manual.json`; step loop blocks with `while _manual_takeover_active(): time.sleep(0.2)` before `makeActions` so the autopilot does not fight a local human pilot. Added `import json`. |
 | `scripts/camera_viewer.py` | **2026-09-12 (part 12):** marked **SUPERSEDED** — see `scripts/mission_viewer.py`. Kept for reference. |
+| `models/` + `tests/test_aerovla_3d_fusion.py` | **2026-09-13 (research task):** first model-side code. New `models/encoders/cem.py`, `models/encoders/lidar_encoder.py`, `models/fusion/cross_attention_fusion.py`, `models/aerial_vla_model.py` (+ `__init__.py` exports), plus smoke test. See §13 for full description. |
 
 ### Untracked / new files & dirs
 
@@ -481,3 +482,58 @@ optional). `aerovla_wrapper_ui.py` is pristine upstream (bf16). H100-only runtim
   `(-86.1, 283.5, -10.1)` paused.
 - **Uncommitted**: `scripts/drone_keyboard.py`, `scripts/multiview.py`, AGENTS.md,
   DOC_JOURNAL.md, PROJECT_HANDOFF.md.
+
+---
+
+## §14 (2026-09-13) 3D LiDAR-Visual Cross-Attention Fusion module (research deliverable)
+
+New tracked `models/` tree + `tests/test_aerovla_3d_fusion.py` + local-only optional
+hook in `openvla-7b/modeling_prismatic.py`.
+
+### Module map (all `d_vis` = 11776 for dinosiglip-224; smoke tests use 64)
+
+| File | Class | What |
+|------|-------|------|
+| `models/encoders/cem.py` | `CoordinatesEncodingModule(d_hidden, d_im=128, d_pc=64, num_depth_samples=32, waypoint_dims=3)` | PE. `image_pe(...)`: `psi_im` MLP on `p_k^im = T_ci^l·K^-1·p_k(u,v)` (depth-sampled rays, mean-pooled over D). `pc_pe(...)`: `psi_pc` on `p_k^pc=(u·u_d, v·v_d, h_k, 1)`. Output heads **zero-init** → no-op at init. |
+| `models/encoders/lidar_encoder.py` | `LiDAREncoder(d_vis, backbone='pointpillars'\|'voxelnet', d_lidar=64, ...)` | `PointPillarsEncoder` (pillar MLP + 2D conv stack) or `VoxelNetEncoder` (dense 3D conv + depth-maxpool). Both produce `[B, N_lidar, d_lidar]` BEV tokens → linear `d_lidar → d_vis`. **Research-simplified** (per-voxel python max loop), not full PointPillars/VoxelNet. |
+| `models/fusion/cross_attention_fusion.py` | `SoftLiDARVisualCrossAttention(d_model, n_heads=8, dropout=0.1, use_smca_mask=False, smca_sigma=10.0)` | Q = Z_vis+Γ_im, K/V = Z_lidar+Γ_pc; multi-head, optional SMCA Gaussian 2D pixel-distance mask, optional key_padding_mask, residual+LayerNorm. |
+| `models/aerial_vla_model.py` | `AerialVLAModel(base_model, d_vis, ...)` | Assembles cem+lidar+fusion. `forward(composite_image, input_ids, ...)` — if all fusion inputs present → vision_backbone → lidar_encoder → CEM → cross-attn → **existing projector** → inject after BOS → language_model, returns `PrismaticCausalLMOutputWithPast`; else falls back to `base_model(...)` unchanged. |
+
+### Input contract (all fused-path args on `AerialVLAModel.forward`)
+
+- `composite_image`: [B, C, H, W] (channel-stacked SigLIP+DINOv2 input, e.g. [B,6,224,224]).
+- `lidar_points`/`lidar_valid`: padded [B, N_max, C] + bool mask.
+- `camera_intrinsics`/`camera_extrinsics`: [B,3,3] K^-1-aware / [B,4,4] T_ci^l.
+- `normalised_pixel_coords`/[B, N_vis, 2], `depth_samples` [B, N_vis, D], `pillar_coords`/`pillar_dims` [B, N_lidar, 2], `pillar_heights` [B, N_lidar].
+- Optional `q_pix`/`k_pix` [B, N, 2] for SMCA mask.
+
+### Integration (default OFF — eval/train path untouched)
+
+- `openvla-7b/` is **git-ignored** (downloaded weights), so the integration hook is
+  **local-only** and must be re-applied after a fresh clone/weights download. It is
+  purely additive: `config.enable_3d_fusion=True` (in `config.json` at load time)
+  attaches `self.fusion_module = AerialVLAModel(self, d_vis=embed_dim)` in
+  `PrismaticForConditionalGeneration.__init__` (+ explicit repo-root sys.path insert
+  before the lazy `models.aerial_vla_model` import) and adds
+  `forward_with_3d_fusion(...)` (calls `fusion_module`, same sensor kwargs).
+- Real insertion point mirrored by `AerialVLAModel.encode_visual`:
+  `modeling_prismatic.py:366` `vision_backbone(pixel_values)` → `:369` `projector` →
+  `:383-385` insert-after-BOS → `:404` `language_model`. `projector` is the
+  **fine-tuned** projector (`checkpoints/` adapter `modules_to_save=["projector"]`).
+
+### Verification
+
+- `tests/test_aerovla_3d_fusion.py` (local, CPU, torch 2.1.2): CEM / LiDAR[pp+voxel] /
+  cross-attn / full-model shapes + fallback all pass.
+
+### Known open items (research, not blockers)
+
+1. `src/aerovla_dataset.py` has **no lidar input yet** — needs AirSim `Lidar1`
+   cloud → padded `lidar_points`/`valid` (client read at
+   `AirVLNSimulatorClientTool_AeroVLA.py:93` `getLidarData('Lidar1')`).
+2. Intrinsics/extrinsics source: `AIRSIM_SETTINGS_TEMPLATE` / `CameraExtrinsics`
+   (server tool) not yet fed to the dataset.
+3. `PointPillarsEncoder` per-voxel python max loop is slow — replace with a real
+   top-K scatter for training-scale throughput.
+4. No training run yet; `enable_3d_fusion` default False keeps existing LoRA
+   eval byte-identical.

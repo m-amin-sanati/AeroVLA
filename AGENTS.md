@@ -181,6 +181,16 @@ When something becomes deprecated or is replaced:
   split/tunnel); `--windowed` optional; `aerovla_wrapper_ui.py` is pristine upstream.
   To sync H100 from local commits: `git push fork main` locally, then on H100
   `git fetch fork && git reset --hard fork/main`.
+- **3D LiDAR-Visual Fusion module (since 2026-09-13, tracked `models/`)**: research
+  deliverable: `models/encoders/cem.py` (`CoordinatesEncodingModule`), 
+  `models/encoders/lidar_encoder.py` (`LiDAREncoder`), `models/fusion/cross_attention_fusion.py`
+  (`SoftLiDARVisualCrossAttention`), `models/aerial_vla_model.py` (`AerialVLAModel`).
+  Wraps the real `openvla-7b` Prismatic model (fused DINOv2+SigLIP, `d_vis=11776` for
+  224 px, projector is the fine-tuned `checkpoints/` one). Optional local-only hook in
+  `openvla-7b/modeling_prismatic.py` (`config.enable_3d_fusion`, default False) +
+  `forward_with_3d_fusion()`. `openvla-7b/` is git-ignored → hook lost on reclone;
+  re-apply by hand. Test: `tests/test_aerovla_3d_fusion.py` (local CPU). `src/aerovla_dataset.py`
+  has NO lidar input yet (next step: AirSim `Lidar1` cloud + intrinsics/extrinsics).
 
 ---
 

@@ -1441,3 +1441,71 @@ rendering bugs surfaced once it connected to a real scene + beacon.
   - **Gotcha: use the `[e]val` bracket trick (or full `ps -eo pid,ppid,cmd` + grep -v grep)
     to avoid your own ssh command self-matching pgrep -f.**
 - Current state: server ports 30000/30001 free; no local eval procs; H100 idle.
+
+---
+
+## Session 2026-09-13 — 3D LiDAR-Visual Cross-Attention Fusion module (research deliverable)
+
+### Goal
+- Implement the pinned research task: `models/encoders/cem.py`
+  (`CoordinatesEncodingModule`), `models/encoders/lidar_encoder.py`
+  (`LiDAREncoder`), `models/fusion/cross_attention_fusion.py`
+  (`SoftLiDARVisualCrossAttention`), `models/aerial_vla_model.py`
+  (`AerialVLAModel`), plus pipeline integration into the real
+  Prismatic/OpenVLA base model. No `models/` existed before; this is the
+  first model-side (non-eval-infra) code in the repo.
+
+### What I did
+- **Architecture confirmed**: base = `openvla-7b/` Prismatic fused
+  `dinosiglip-vit-so-224px` (DINOv2+SigLIP), `PrismaticProjector` (`no-align+
+  fused-gelu-mlp`), LLaMA-2. Integration point = `PrismaticForConditionalGeneration`
+  multimodal forward (`modeling_prismatic.py:366` `vision_backbone(pixel_values)`
+  → `:369` `projector(...)` → insert after BOS → `language_model`).
+- **Created `models/` tree** (git-tracked):
+  - `models/encoders/cem.py` — CEM: `psi_im` MLP embeds `p_k^im = T_ci^l·K^-1·p_k(u,v)`
+    (depth-sampled rays), `psi_pc` embeds `p_k^pc = (u·u_d, v·v_d, h_k, 1)`. Both output
+    heads zero-init → no-op at init.
+  - `models/encoders/lidar_encoder.py` — `PointPillarsEncoder` / `VoxelNetEncoder` +
+    `LiDAREncoder` (`D_lidar → D_vis` linear). Dense research-simplified backbones,
+    not full PointPillars/VoxelNet.
+  - `models/fusion/cross_attention_fusion.py` — `SoftLiDARVisualCrossAttention`
+    (Q = Z_vis+Γ_im, K/V = Z_lidar+Γ_pc, multi-head, optional SMCA 2D distance mask,
+    residual+LayerNorm).
+  - `models/aerial_vla_model.py` — `AerialVLAModel(base_model, d_vis, ...)` wrapper:
+    fused forward + fallback pass-through; auto project + inject after BOS; mirrors
+    Prismatic return type (`PrismaticCausalLMOutputWithPast`).
+- **Smoke tests** (`tests/test_aerovla_3d_fusion.py`): CEM/LiDAR[pp+voxel]/cross-attn/
+  full-model shapes all pass on local box (torch 2.1.2 CPU).
+- **Optional integration hook** in `openvla-7b/modeling_prismatic.py` (LOCAL-ONLY,
+  `openvla-7b/` is git-ignored): `config.enable_3d_fusion` flag (default False) attaches
+  `self.fusion_module = AerialVLAModel(...)` + `forward_with_3d_fusion()` method.
+  **Byte-for-byte additive** — original `forward` untouched, default eval/train path
+  unchanged.
+
+### Problems faced
+- `psi_im`/`psi_pc` input-dim bug: `psi_im` must embed the 3D de-homogenised ray point
+  (dim = waypoint_dims=3), `psi_pc` embeds `(u·u_d, v·v_d, h_k, 1)` (dim 4). First cut
+  used waypoint_dims+1 for both → matmul shape error (8192x3 vs 4x128).
+- `VoxelNetEncoder` missing `self.grid_res` assignment → AttributeError.
+- Smoke-test N_vis mismatch (fake backbone 1024 tokens vs 256 assumption) + depth-sample
+  count mismatch → fixed test to 1024 / D=16.
+
+### Solutions applied
+- CEM: `psi_im(d_in=waypoint_dims)`, `psi_pc(d_in=waypoint_dims+1)`; `pc_pe` passes the
+  full 4-vector.
+- Added `self.grid_res = grid_res` in `VoxelNetEncoder`.
+- Test now uses `N_vis = 224*224//49 = 1024`, `N_lidar = 32*32 = 1024`, `cem_num_depth_samples=16`.
+
+### Current state
+- `models/` + tests created, all smoke tests pass.
+- `openvla-7b/modeling_prismatic.py` has the optional hook (untracked/local).
+- No training/eval changes; existing LoRA path fully preserved.
+- Dirty: `airsim_plugin/settings/30001/settings.json` (pre-existing, not committed).
+
+### Next steps
+- Optionally wire LiDAR data source into `src/aerovla_dataset.py` (AirSim `Lidar1`
+  point cloud → padded `lidar_points` + `valid`), intrinsics/extrinsics from
+  `AIRSIM_SETTINGS_TEMPLATE` / `CameraExtrinsics`.
+- When ready: enable `config.enable_3d_fusion=True` in training config; train adapters.
+- Consider upgrading `PointPillarsEncoder` to a real topK scatter (research-simplified
+  per-voxel max loop is slow).
