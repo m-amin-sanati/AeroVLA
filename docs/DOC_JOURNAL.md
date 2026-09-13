@@ -1476,11 +1476,13 @@ rendering bugs surfaced once it connected to a real scene + beacon.
     Prismatic return type (`PrismaticCausalLMOutputWithPast`).
 - **Smoke tests** (`tests/test_aerovla_3d_fusion.py`): CEM/LiDAR[pp+voxel]/cross-attn/
   full-model shapes all pass on local box (torch 2.1.2 CPU).
-- **Optional integration hook** in `openvla-7b/modeling_prismatic.py` (LOCAL-ONLY,
-  `openvla-7b/` is git-ignored): `config.enable_3d_fusion` flag (default False) attaches
+- **Optional integration hook** in `openvla-7b/modeling_prismatic.py`:
+  `config.enable_3d_fusion` flag (default False) attaches
   `self.fusion_module = AerialVLAModel(...)` + `forward_with_3d_fusion()` method.
   **Byte-for-byte additive** — original `forward` untouched, default eval/train path
-  unchanged.
+  unchanged. **2026-09-13 (follow-up): committed** inside the nested `openvla-7b/`
+  repo as **`df5d0eb`** (+82/-0) so it survives and is revertable, instead of being
+  lost in the git-ignored dir.
 
 ### Problems faced
 - `psi_im`/`psi_pc` input-dim bug: `psi_im` must embed the 3D de-homogenised ray point

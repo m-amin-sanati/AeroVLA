@@ -213,7 +213,7 @@ __marimo__/
 # Big per-env UE4 assets + raw episode archives
 envs/
 
-# Downloaded base model weights
+# Downloaded base model weights (14 GB; nested git repo — see openvla-7b/.git, hook committed there)
 openvla-7b/
 
 # Eval output (trajectory camera frames, per-episode logs)

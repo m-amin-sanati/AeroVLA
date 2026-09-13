@@ -509,13 +509,21 @@ hook in `openvla-7b/modeling_prismatic.py`.
 
 ### Integration (default OFF — eval/train path untouched)
 
-- `openvla-7b/` is **git-ignored** (downloaded weights), so the integration hook is
-  **local-only** and must be re-applied after a fresh clone/weights download. It is
-  purely additive: `config.enable_3d_fusion=True` (in `config.json` at load time)
-  attaches `self.fusion_module = AerialVLAModel(self, d_vis=embed_dim)` in
+- `openvla-7b/` is a **nested git repo** (HF `openvla/openvla-7b`, LFS-managed, git-ignored
+  in this parent). The hook is **committed inside the nested repo as `df5d0eb`**
+  (`git -C openvla-7b log --oneline -3` → `df5d0eb` on top of `47a0ec7`). It is purely
+  additive: `config.enable_3d_fusion=True` (in `config.json` at load time) attaches
+  `self.fusion_module = AerialVLAModel(self, d_vis=embed_dim)` in
   `PrismaticForConditionalGeneration.__init__` (+ explicit repo-root sys.path insert
   before the lazy `models.aerial_vla_model` import) and adds
   `forward_with_3d_fusion(...)` (calls `fusion_module`, same sensor kwargs).
+  Diff is **+82/-0** against the previous commit — revert/compare easily via
+  `git -C openvla-7b diff 47a0ec7..df5d0eb -- modeling_prismatic.py` (or `git revert df5d0eb` in that repo).
+- **CAUTION:** the nested repo is LFS-configured but the 14 GB LFS objects are NOT all
+  present locally → `git add .`/`git reset` inside it triggers `clean filter 'lfs' failed`
+  / smudge stalls on the `.safetensors`. Never run those; the single desired change is
+  already committed. If you must operate, use plumbing (`git -c filter.lfs.smudge=cat ...`)
+  or target only `modeling_prismatic.py`.
 - Real insertion point mirrored by `AerialVLAModel.encode_visual`:
   `modeling_prismatic.py:366` `vision_backbone(pixel_values)` → `:369` `projector` →
   `:383-385` insert-after-BOS → `:404` `language_model`. `projector` is the

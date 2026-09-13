@@ -186,11 +186,14 @@ When something becomes deprecated or is replaced:
   `models/encoders/lidar_encoder.py` (`LiDAREncoder`), `models/fusion/cross_attention_fusion.py`
   (`SoftLiDARVisualCrossAttention`), `models/aerial_vla_model.py` (`AerialVLAModel`).
   Wraps the real `openvla-7b` Prismatic model (fused DINOv2+SigLIP, `d_vis=11776` for
-  224 px, projector is the fine-tuned `checkpoints/` one). Optional local-only hook in
-  `openvla-7b/modeling_prismatic.py` (`config.enable_3d_fusion`, default False) +
-  `forward_with_3d_fusion()`. `openvla-7b/` is git-ignored → hook lost on reclone;
-  re-apply by hand. Test: `tests/test_aerovla_3d_fusion.py` (local CPU). `src/aerovla_dataset.py`
-  has NO lidar input yet (next step: AirSim `Lidar1` cloud + intrinsics/extrinsics).
+  224 px, projector is the fine-tuned `checkpoints/` one). Optional hook in the nested
+  `openvla-7b/` repo (its own git repo, not the parent): **committed as `df5d0eb`**
+  (`config.enable_3d_fusion`, default False) + `forward_with_3d_fusion()`; original
+  `forward()` byte-for-byte unchanged (+82/-0). `openvla-7b/` is git-ignored in the
+  parent and is a nested LFS repo — DO NOT `git add .` or `git reset` inside it (14 GB
+  LFS smudge stalls); the one committed change is already captured. Test:
+  `tests/test_aerovla_3d_fusion.py` (local CPU). `src/aerovla_dataset.py` has NO
+  lidar input yet (next step: AirSim `Lidar1` cloud + intrinsics/extrinsics).
 
 ---
 
