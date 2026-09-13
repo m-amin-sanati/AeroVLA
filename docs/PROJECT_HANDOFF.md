@@ -592,3 +592,71 @@ Current `eval_results/checkpoints/seen_valset/*/<episode>/log/` frames have sens
 `['state','imu']` only (no `lidar`). `UAVLiDARDataset(lidar_sensor_key="lidar",
 require_lidar=False)` emits a **zero cloud** for those; `require_lidar=True` raises
 KeyError (strict mode for fresh lidar-enabled captures).
+
+---
+
+## §14c (2026-09-13) Option A: end-to-end BC NLL training (`src/train_step_a.py`) + prompt-masked collator
+
+### What changed
+
+- **`src/train_step_a.py`** (NEW, tracked) — Option A behaviour-cloning NLL training
+  script. Simultaneously trains `LiDAREncoder` + `CEM` + `SoftLiDARVisualCrossAttention`
+  (all under `base_model.fusion_module`), the fine-tuned projector (via PEFT
+  `modules_to_save=["projector"]`), and LLaMA-2 LoRA adapters.
+- **`datasets/uav_lidar_dataset.py`** (modified) — added `make_prompt_parts(item)`
+  producing `(full_text, prompt_only)`; `UAVLiDARCollator(mask_prompt=True)` masks
+  `labels[:, :prompt_len] = -100` so BC NLL supervises ONLY the action tokens;
+  `_tokenize` applies it. `_make_prompt` now delegates to `make_prompt_parts`.
+
+### Design (settled + verified locally with a dummy mirroring the real forward)
+
+- Load with `AutoModelForVision2Seq.from_pretrained(MODEL_PATH, ...,
+  enable_3d_fusion=True)` → PEFT `get_peft_model(model, LoraConfig(r=64, alpha=128,
+  target_modules=[q,k,v,o,gate,up,down_proj], modules_to_save=["projector"]))`.
+- **Call the raw model**: `peft_raw = model.base_model.model` (LoRA is injected
+  in-place into the same `nn.Linear`s), then
+  `peft_raw.forward_with_3d_fusion(input_ids=, attention_mask=, pixel_values=,
+  labels=, lidar_points=, lidar_valid=, camera_intrinsics=, camera_extrinsics=,
+  normalised_pixel_coords=, depth_samples=, pillar_coords=, pillar_dims=,
+  pillar_heights=, q_pix=, k_pix=)`. The fused forward builds `multimodal_labels`
+  internally (inserts −100 patch token at position 1, `models/aerial_vla_model.py:203-209`),
+  so the collator's action-only (prompt-masked) labels are the correct input; loss =
+  `out.loss`.
+- **Unfreeze the fusion modules explicitly**: `peft_raw.fusion_module.* -> requires_grad=True`.
+  The projector is trained via PEFT's `modules_to_save` (verified: `forward()` routes
+  to the trainable `modules_to_save.default` copy; `original_module` stays frozen as a
+  reference). Do NOT put `fusion_module` in `modules_to_save` (creates a wasteful
+  trainable duplicate).
+- **Gradient-path proof (dummy)**: loss 3.46→3.23→3.01 over 3 AdamW steps; grads reach
+  `lora_A`/`lora_B`, fusion `fuse_lin`, and `projector.modules_to_save.default`. `lora_A`
+  shows no grad at iter 0 only because `lora_B` is zero-init (standard PEFT; grad flows
+  from iter 1).
+- **Conventions mirrored from `train_aerovla.py`**: NCCL env, BF16, `micro_batch`,
+  grad accum 8, lr 2e-4 cosine + warmup 0.03, LoRA r64/α128/dropout 0.05, wd 0.03,
+  max_grad_norm 1, gradient checkpointing (CUDA only), DDP support, `--no_lidar`
+  fallback to standard forward.
+
+### Verified (local, CPU)
+
+- Batch from `UAVLiDARCollator(mask_prompt=True)` over a synthetic episode tree:
+  composite [3,6,224,224] f32, lidar_points [3,20000,4], lidar_valid [3,20000] bool,
+  input_ids/labels [3,96], 30 non-masked (action) labels; N_vis=256, N_lidar=4096;
+  all CEM/pillar/q/k/intrinsics/extrinsics tensors present.
+- `tests/test_uav_lidar_dataset.py` + `tests/test_aerovla_3d_fusion.py`: 8/8 pass.
+- `python src/train_step_a.py --help` works (sys.path repo-root fix).
+
+### CANNOT validate locally
+
+The real fused forward/backward (7B + fusion + LoRA) needs the H100 (6 GB local VRAM
+is far too small even at 4-bit). Smoke it on H100 first:
+`bash scripts/.. / python src/train_step_a.py --micro_batch 1 --max_steps 2`.
+
+### Gotchas for the next agent
+
+- `UAVLiDARDataset.__init__(samples=..., data_root=..., training=True)` — pass pre-loaded
+  samples, not root/split_json (script does `json.load(split_json)` itself).
+- Synthetic test data needs front/down PNGs + `log/<frame>.json`; calibration K/T is
+  synthesized when no calib file (front cam 90° FOV, `_default_extrinsics`).
+- `raw.named_parameters()` has NO `base_model.` prefix (that's the PEFT wrapper view).
+- Never `git add .`/`git reset` inside `openvla-7b/` (nested LFS repo); commit only
+  `update fusion forward`-style hooks via `git -C openvla-7b add <file>`.

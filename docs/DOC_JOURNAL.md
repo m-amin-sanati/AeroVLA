@@ -1565,3 +1565,70 @@ rendering bugs surfaced once it connected to a real scene + beacon.
 - Wire LiDAR into `src/aerovla_dataset.py`? (deferred — dataset is separate optional path).
 - Real-episode lidar validation when fresh lidar-enabled eval logs exist
   (current 32,883-frame logs have no `lidar` key).
+
+## Session 2026-09-13 (3rd) — Option A BC NLL training script (`src/train_step_a.py`) + prompt-masked collator
+
+### Goal
+- Implement **Option A first**: end-to-end Behavior-Cloning (BC) NLL training
+  script that trains `LiDAREncoder` + `CEM` + `SoftLiDARVisualCrossAttention` +
+  fusion projector + LLaMA-2 LoRA simultaneously, then validate forward/backward.
+
+### What I did
+- **Wrote `src/train_step_a.py`** (new, 312 lines) per the settled design:
+  - Load `AutoModelForVision2Seq.from_pretrained(..., enable_3d_fusion=True)`
+    (constructs `AerialVLAModel` inside `fusion_module`).
+  - LoRA wrap: `LoraConfig(r=64, alpha=128, modules_to_save=["projector"])`
+    (same targets as `train_aerovla.py`).
+  - Call `peft_raw.forward_with_3d_fusion(...)` on the RAW model with the full
+    collator batch (lidar_points, lidar_valid, K⁻¹ intrinsics, extrinsics,
+    normalised_pixel_coords, depth_samples, pillar_*, q_pix, k_pix).
+  - Explicitly `requires_grad=True` on `peft_raw.fusion_module.*`.
+  - Prompt-masked labels from `UAVLiDARCollator(mask_prompt=True)`.
+  - Manual loop (not HF Trainer): AdamW wd 0.03 + cosine warmup, grad accum,
+    grad clipping, gradient checkpointing (CUDA only), DDP support, `--no_lidar`
+    fallback to standard forward.
+- **Added repo-root to sys.path** so `python src/train_step_a.py` runs from anywhere
+  (`sys.path[0]` was `src/`).
+- **Verified prompt-masked collator batch end-to-end** with synthetic episode tree:
+  batch keys/input_ids/labels/pillar/q/k intrinsics all present; labels non-mask=30
+  (action-only); composite [3,6,224,224] float32; lidar [3,20000,4]; N_vis=256;
+  N_lidar=4096.
+- **Proved the PEFT+fusion gradient path with a dummy mirroring the real
+  architecture**: after unfreeze, `lora_A`/`lora_B`, fusion `fuse_lin`, and
+  `projector.modules_to_save.default` all receive grads through
+  `raw.forward_with_3d_fusion(...)`; loss decreases over 3 steps (3.46→3.23→3.01).
+  Confirmed PEFT `modules_to_save` wraps projector so its `forward()` routes to the
+  trainable copy (grads to `modules_to_save.default`, none to `original_module` —
+  which stays frozen as a reference). `lora_A` gets no grad at iter 0 only because
+  `lora_B` is zero-init (standard PEFT); grad flows from iter 1 onward.
+
+### Problems faced
+- Typo `os.enenv.setdefault` in first draft → fixed to `os.environ.setdefault`.
+- `UAVLiDARDataset.__init__` takes `samples` (not root/split_json) → updated script
+  to `json.load` the split and pass `samples=` + `training=True`.
+- Synthetic test failed: `_getitem__` needs front/down PNGs + `log/<frame>.json` →
+  built the tree; dataset synthesizes K/T calib when absent (get_camera_calib).
+- `No module named 'datasets'` when running `python src/train_step_a.py` (cwd
+  resolution) → added repo root to `sys.path`.
+- PEFT named-param paths: `raw.named_parameters()` has no `base_model.` prefix
+  (that's the wrapper's view); fixed dummy test lookups.
+
+### Solutions applied
+- (see above; the full fix log is in this entry)
+
+### Current state
+- `src/train_step_a.py` written; CLI `--help` works; modules import; all tests
+  (8/8) pass; `train_step_a` syntax OK.
+- Uncommitted: `src/train_step_a.py` (new), `datasets/uav_lidar_dataset.py`
+  (prompt-masking: `make_prompt_parts`, `UAVLiDARCollator(mask_prompt=True)`,
+  `_tokenize` masking labels[:plen]=-100).
+- Real fused forward/backward on the actual 7B **cannot run on the local 6 GB
+  box** — must validate on the H100.
+
+### Next steps
+- Commit `src/train_step_a.py` + datasets prompt-masking; `git push fork main`.
+- On H100: fetch + `python src/train_step_a.py --micro_batch 1 --max_steps 2`
+  small-batch smoke to validate the REAL fused forward/backward + LoRA grads, then
+  kick the real run.
+- After Option A is validated, implement Option B: InfoNCE pre-alignment
+  (frozen DINOv2/SigLIP) → LoRA BC fine-tune.

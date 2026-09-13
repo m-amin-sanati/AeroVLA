@@ -547,6 +547,32 @@ def quantize_action(val, axis, action_stats=None):
 NUM_BINS = 99
 
 
+def make_prompt_parts(item, tokenizer=None, prompt_prefix="", prompt_suffix=""):
+    """Build the (full_text, prompt_only) pair for a dataset item, matching
+    `src/aerovla_dataset.py`'s exact format:
+        full_text   = f"{instruction}\\nAction: BB BB BB[ LAND]<eos>"
+        prompt_only = f"{instruction}\\nAction: "
+    so prompt tokens can be masked out of the BC labels (predict ONLY actions).
+
+    Returns:
+        (full_text, prompt_only)
+    """
+    instr = (item.get("instruction") or "").strip()
+    label = item.get("label") or {}
+    bin_fwd = quantize_action(label.get("fwd", 0.0), "forward")
+    bin_down = quantize_action(label.get("down", 0.0), "down")
+    bin_yaw = quantize_action(label.get("yaw", 0.0), "yaw")
+    action = f"{bin_fwd:02d} {bin_down:02d} {bin_yaw:02d}"
+    if item.get("is_last_step") or item.get("is_penultimate"):
+        action += " LAND"
+    if tokenizer is not None and tokenizer.eos_token:
+        action += tokenizer.eos_token
+    else:
+        action += "</s>"
+    prompt_only = f"{instr}\nAction: "
+    return f"{prompt_only}{action}", prompt_only
+
+
 class UAVLiDARCollator(object):
     """Collate a list of samples from UAVLiDARDataset into a batch dict ready
     for `AerialVLAModel.forward(...)`.
@@ -556,6 +582,11 @@ class UAVLiDARCollator(object):
       * numpy -> tensors on `device`/`dtype`
       * tokenization of prompt+quantized action via `tokenizer`
       * (labels are built from the same quantized action as the text)
+
+    Args:
+        mask_prompt: if True, set labels[:, :prompt_len] = IGNORE_INDEX so the
+            BC NLL loss only supervises the action token(s) (as in
+            `src/train_aerovla.py`); if False, only padding is masked.
     """
 
     def __init__(
@@ -566,6 +597,7 @@ class UAVLiDARCollator(object):
         dtype=torch.float32,
         image_processor_key="image_processor",
         tokenizer_max_length=96,
+        mask_prompt=True,
     ):
         self.processor = processor
         self.tokenizer = tokenizer
@@ -573,6 +605,7 @@ class UAVLiDARCollator(object):
         self.dtype = dtype
         self.image_processor_key = image_processor_key
         self.tokenizer_max_length = tokenizer_max_length
+        self.mask_prompt = bool(mask_prompt)
         if processor is not None and hasattr(processor, self.image_processor_key):
             self.image_processor = getattr(processor, self.image_processor_key)
         else:
@@ -616,24 +649,23 @@ class UAVLiDARCollator(object):
         return torch.cat(out, dim=0)
 
     def _make_prompt(self, item):
-        instr = (item.get("instruction") or "").strip()
-        # Rebuild the action string from label like AeroVLADataset.
-        label = item.get("label") or {}
-        bin_fwd = quantize_action(label.get("fwd", 0.0), "forward")
-        bin_down = quantize_action(label.get("down", 0.0), "down")
-        bin_yaw = quantize_action(label.get("yaw", 0.0), "yaw")
-        action = f"Action: {bin_fwd:02d} {bin_down:02d} {bin_yaw:02d}"
-        if item.get("is_last_step") or item.get("is_penultimate"):
-            action += " LAND"
-        if self.tokenizer is not None and self.tokenizer.eos_token:
-            action += self.tokenizer.eos_token
-        else:
-            action += "</s>"
-        return f"{instr}\n{action}"
+        """Return (full_text, prompt_only) using the same exact format as
+        `src/aerovla_dataset.py` / `make_prompt_parts` above."""
+        return make_prompt_parts(item, tokenizer=self.tokenizer)
 
-    def _tokenize(self, texts):
+    def _tokenize(self, pairs):
+        """Tokenize `pairs` = list of (full_text, prompt_only).
+
+        Labels:
+          * if `mask_prompt`: labels[:, :prompt_len] = -100 so BC NLL
+            supervises ONLY the action token(s) (matches train_aerovla).
+          * otherwise: only padding is masked (old behaviour).
+        """
         if self.tokenizer is None:
             return None, None, None
+        texts = [p[0] for p in pairs]
+        prompts = [p[1] for p in pairs]
+
         enc = self.tokenizer(
             texts,
             return_tensors="pt",
@@ -643,9 +675,20 @@ class UAVLiDARCollator(object):
         )
         input_ids = enc["input_ids"].to(self.device)
         attn = enc["attention_mask"].to(self.device)
-        # Labels: copy input_ids, mask out padding (attention 0 -> -100).
+
         labels = input_ids.clone()
-        labels[attn == 0] = -100
+        if self.mask_prompt:
+            # Number of prompt tokens (instruction + "\nAction: "); anything
+            # past it is the action (predict all padding -> -100 too).
+            plen = self.tokenizer(
+                prompts,
+                return_tensors="pt",
+                add_special_tokens=False,
+            )["input_ids"].shape[1]
+            labels[:, :plen] = -100
+            labels[attn == 0] = -100
+        else:
+            labels[attn == 0] = -100
         return input_ids, attn, labels
 
     def __call__(self, batch):
@@ -682,8 +725,8 @@ class UAVLiDARCollator(object):
         }
 
         # --- text ---
-        texts = [self._make_prompt(b) for b in batch]
-        input_ids, attention_mask, labels = self._tokenize(texts)
+        pairs = [self._make_prompt(b) for b in batch]
+        input_ids, attention_mask, labels = self._tokenize(pairs)
         if input_ids is not None:
             out["input_ids"] = input_ids
             out["attention_mask"] = attention_mask

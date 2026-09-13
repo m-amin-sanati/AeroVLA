@@ -206,6 +206,21 @@ When something becomes deprecated or is replaced:
   BEV pillars. Old logs load fine; fresh lidar-enabled logs validate the real path.
   Test: `tests/test_uav_lidar_dataset.py` (4/4 pass, local CPU, pytest installed in the
   `aero_vla` venv).
+- **Option A BC NLL training (since 2026-09-13, tracked `src/train_step_a.py`)**:
+  end-to-end behaviour-cloning training of the 3D fusion stack (`LiDAREncoder` +
+  `CEM` + `SoftLiDARVisualCrossAttention` under `base_model.fusion_module`) + projector +
+  LLaMA-2 LoRA. **Design (verified with a dummy mirroring the real forward)**: load
+  `AutoModelForVision2Seq.from_pretrained(..., enable_3d_fusion=True)` → PEFT
+  `LoraConfig(r=64, α=128, modules_to_save=["projector"])` → call
+  `peft_raw.forward_with_3d_fusion(...)` (peft_raw = `model.base_model.model`) with the
+  full collator batch, and `requires_grad=True` on `peft_raw.fusion_module.*`. PEFT
+  injects LoRA in-place into the LM `nn.Linear`s; `modules_to_save` wraps the projector
+  so `forward()` uses the trainable copy (do NOT add `fusion_module` to
+  `modules_to_save`). Collator masks prompt tokens via `mask_prompt=True` (labels[:plen]
+  = -100) → BC NLL supervises only actions; fusion inserts its own −100 patch label at
+  pos 1 (`models/aerial_vla_model.py:203-209`). **Real fused fwd/bwd must run on the
+  H100** (6 GB local VRAM too small); smoke with `--micro_batch 1 --max_steps 2`.
+  Test (local CPU): 8/8 pass; `python src/train_step_a.py --help` works.
 
 ---
 
