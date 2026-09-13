@@ -222,6 +222,7 @@ def main():
         device=device,
         dtype=torch_dtype,
         mask_prompt=True,
+        tokenizer_max_length=256,
     )
     loader = DataLoader(
         dataset,

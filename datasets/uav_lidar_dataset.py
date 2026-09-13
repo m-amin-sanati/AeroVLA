@@ -683,6 +683,7 @@ class UAVLiDARCollator(object):
             plen = self.tokenizer(
                 prompts,
                 return_tensors="pt",
+                padding="longest",
                 add_special_tokens=False,
             )["input_ids"].shape[1]
             labels[:, :plen] = -100
