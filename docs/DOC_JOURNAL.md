@@ -1632,3 +1632,85 @@ rendering bugs surfaced once it connected to a real scene + beacon.
   kick the real run.
 - After Option A is validated, implement Option B: InfoNCE pre-alignment
   (frozen DINOv2/SigLIP) → LoRA BC fine-tune.
+
+## Session 2026-09-13 (4th) — H100 smoke `loss=nan` ROOT-CAUSED + FIXED (HF loader discards fresh fusion params → uninitialized memory)
+
+### Goal
+- Get the H100 smoke (`src/train_step_a.py --micro_batch 1 --max_steps 2`)
+  to a **finite, non-NaN loss** so real Option A training can start.
+
+### What I did
+- Ran the H100 smoke → `loss=nan`. Ran a per-stage `nan_probe_h100.py` on H100
+  → located NaN exactly at `lidar_encoder` output (`(1,4096,2176) nan=True`) while
+  `vision_backbone`, `cem pe_im`, `cem pe_pc` were all clean.
+- Ran `lidar_isolate_h100.py` (per-sub-layer CUDA-bf16 probe, all-zero/empty cloud):
+  `pillar_mlp` clean, `voxelize` clean, **`conv_stack` → NaN**, `proj` → NaN.
+- Ruled out by standalone CUDA-bf16 repros (`bn_zero_cuda.py`, `lidar_layers_h100.py`):
+  fresh `nn.BatchNorm2d`/`Conv2d`/`ReLU` conv_stacks on all-zero input are **clean**
+  on CUDA bf16 (train + requires_grad + fp32→bf16 cast). So it was NOT a pure
+  bf16/CUDA kernel issue.
+- Dumped actual loaded model params (`lidar_nan_params.py`):
+  - `fusion.norm.weight` / `fusion.norm.bias` (fusion LayerNorm) = **NaN**.
+  - `lidar_encoder.backbone.conv_stack.*.weight` (BatchNorm) = **~8e35 garbage**
+    (expected fresh-init = 1.0); `running_mean=0/var=1/num_batches_tracked=0`
+    (fresh BN, so they were freshly made but with garbage scale).
+  - conv/LN weights that *do* init look right (kaiming ~0.08); only **BN weight
+    and the fusion LayerNorm** are garbage/NaN.
+- **Root cause**: HF `from_pretrained(..., low_cpu_mem_usage=True,
+  device_map={"": rank})` first moves the whole model to **meta device**,
+  discarding the fresh initialization done in `AerialVLAModel.__init__`
+  (BN weight=1, LayerNorm weight=1). Then it materializes only the params that
+  appear in the checkpoint. The fresh `fusion_module` params are NOT in the
+  checkpoint → they come back as **uninitialized raw memory** (NaN / huge
+  garbage) instead of the proper init. The `.to(base_dtype)` cast then only
+  changed dtype, baking in the garbage. Standalone repros were clean because
+  they never went through the meta-discard path.
+- Why `lidar_encoder` NaNs *first*: the BN in `conv_stack` has `weight ~8e35`
+  and `bias ~8e35`; with a non-zero BEV the `x_hat * weight + bias` overflows
+  bf16 → NaN, which then propagates to `proj`/loss. With a fully zero BEV it
+  stays 0/CLEAN → hence the all-zero isolate looked clean at `conv_stack` in
+  earlier runs but the real (nonzero) batch NaNs.
+- **Fix**: added `AerialVLAModel.reset_fusion_parameters()` (`models/aerial_vla_model.py`)
+  that deterministically re-initializes cem/lidar_encoder/fusion (Conv/Linear
+  kaiming+proper bias, BatchNorm `reset_parameters()`, LayerNorm weight=1/bias=0).
+  Called it in `src/train_step_a.py` immediately after `get_peft_model`, because the
+  meta-discard happens at `from_pretrained` time.
+- Verified:
+  - Local unit test corrupts all fusion params→NaN then `reset_fusion_parameters()`
+    → 0 NaN, BN=1, LN=1, proj sane; dtype stays bf16 after reset.
+  - Local `pytest tests/test_aerovla_3d_fusion.py` → **10/10 passed** (added
+    `test_reset_fusion_parameters_recovers_nan` + `test_reset_fusion_parameters_bf16`).
+  - Synced `models/aerial_vla_model.py` + `src/train_step_a.py` to H100.
+  - **H100 smoke re-run: PASSED** — `[stepA] epoch=0 step=1/2 loss=10.7706`,
+    `step=2/2 loss=14.6890` (finite; per-step loss varies with random data),
+    checkpoint saved, exit 0.
+
+### Problems faced
+- `loss=nan` on H100 smoke (end-to-end ran, but forward → NaN).
+- Buffered stdout on H100 made per-param dumps vanish (no flush) — fixed by
+  writing to a file + `flush=True`.
+- 2nd-guessed the `conv_stack` NaN as CUDA-bf16 kernel; standalone repros
+  clean → pointed to the model's own (uninitialized) params.
+
+### Solutions applied / runbook
+1. Add `reset_fusion_parameters()` to `AerialVLAModel` (boxed in AGENTS §6
+   "current key context" as the mandatory post-load step when fusing).
+2. Call `peft_raw.fusion_module.reset_fusion_parameters()` right after
+   `get_peft_model` in any script that loads the fused model with
+   `low_cpu_mem_usage`+`device_map`.
+3. Re-run smoke: `ssh H100; cd /workspaces/AeroVLA && setsid nohup bash
+   .stepa_smoke/run.sh >.stepa_smoke/smoke2.log 2>&1 &` → watch
+   `grep '\[stepA\]' .stepa_smoke/smoke2.log` for finite losses.
+
+### Current state
+- **H100 smoke passes with finite loss.** The fuse path is now trainable end-to-end.
+- Uncommitted: `models/aerial_vla_model.py` (reset_fusion_parameters + math import),
+  `src/train_step_a.py` (reset call), `tests/test_aerovla_3d_fusion.py` (2 new tests),
+  plus the earlier pending: `datasets/uav_lidar_dataset.py`, `models/encoders/cem.py`.
+- `tests/test_uav_lidar_dataset.py` still NOT on H100.
+
+### Next steps
+- Commit + push `fork main` (6 files), H100 `git reset --hard fork/main`.
+- Launch real Option A run on `dataset_raw`/`data/aerovla_train_dataset.json`
+  with the full settings (MICRO_BATCH=2, GRAD_ACCUM=8, lora r64 α128, bf16).
+- Then start Option B (InfoNCE pre-alignment).

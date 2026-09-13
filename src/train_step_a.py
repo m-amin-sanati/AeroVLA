@@ -130,15 +130,25 @@ def main():
 
     # ---- model (fusion enabled at load) ----
     print("[stepA] loading OpenVLA with enable_3d_fusion=True ...")
+    # `enable_3d_fusion` is read from the *config* (`getattr(config, ...)` in
+    # modeling_prismatic.py), so it must be set on the config object BEFORE
+    # instantiation -- passing it as a from_pretrained kwarg would try to feed it
+    # to the model __init__ (TypeError).
+    from transformers import AutoConfig
+    _cfg = AutoConfig.from_pretrained(args.model_path, trust_remote_code=True)
+    setattr(_cfg, "enable_3d_fusion", not args.no_lidar)
     model = AutoModelForVision2Seq.from_pretrained(
         args.model_path,
+        config=_cfg,
         torch_dtype=torch_dtype,
         trust_remote_code=True,
-        enable_3d_fusion=True,          # constructs AerialVLAModel inside
         low_cpu_mem_usage=True,
+        # device_map dispatches params straight to GPU and materializes the NEW
+        # random fusion_module params on real devices; a later `.to(device)`
+        # fails with "Cannot copy out of meta tensor" for those extra params.
+        device_map={"": local_rank} if torch.cuda.is_available() else None,
     )
     model.resize_token_embeddings(len(tokenizer))
-    model.to(device)
 
     # ---- LoRA wrap (in-place LM injection) ----
     lora_config = LoraConfig(
@@ -153,6 +163,13 @@ def main():
     )
     model = get_peft_model(model, lora_config)
     peft_raw = model.base_model.model          # original PrismaticForConditionalGeneration
+
+    # The fresh fusion stack (cem/lidar_encoder/fusion) is discarded by HF's
+    # loader (`low_cpu_mem_usage` + `device_map` move to meta, then only
+    # checkpoint keys materialize) and comes back uninitialized -> NaN/garbage
+    # params. Restore a deterministic init immediately after load.
+    if not args.no_lidar:
+        peft_raw.fusion_module.reset_fusion_parameters()
 
     # Gradient checkpointing (matches `src/train_aerovla.py`); enables 7B+fusion
     # on a single H100 MIG.  Runs below the PEFT wrapper so it applies to the

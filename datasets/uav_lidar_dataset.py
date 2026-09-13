@@ -710,9 +710,11 @@ class UAVLiDARCollator(object):
             "lidar_points": to_t([b["lidar_points"] for b in batch]),
             "lidar_valid": to_t([b["lidar_valid"] for b in batch]).bool(),
             # CEM wants K^-1 here (see module docstring / models/encoders/cem.py).
+            # linalg.inv has no bf16 kernel, and bf16 inversion loses precision,
+            # so invert in fp32 then cast back to the batch dtype.
             "camera_intrinsics": torch.linalg.inv(
-                to_t([b["camera_intrinsics"] for b in batch])
-            ),
+                to_t([b["camera_intrinsics"] for b in batch]).float()
+            ).to(dtype=self.dtype),
             "camera_extrinsics": to_t([b["camera_extrinsics"] for b in batch]),
             "normalised_pixel_coords": to_t([b["normalised_pixel_coords"] for b in batch]),
             "depth_samples": to_t([b["depth_samples"] for b in batch]),

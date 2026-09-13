@@ -660,3 +660,66 @@ is far too small even at 4-bit). Smoke it on H100 first:
 - `raw.named_parameters()` has NO `base_model.` prefix (that's the PEFT wrapper view).
 - Never `git add .`/`git reset` inside `openvla-7b/` (nested LFS repo); commit only
   `update fusion forward`-style hooks via `git -C openvla-7b add <file>`.
+
+## §14d (2026-09-13) H100 smoke `loss=nan` ROOT-CAUSED + FIXED — fusion params discarded by HF loader
+
+### Symptom
+- H100 smoke of `src/train_step_a.py` (2 steps bf16) ran end-to-end but `loss=nan`.
+- `nan_probe_h100.py` pinpointed NaN at `lidar_encoder` output `(1,4096,2176) nan=True`;
+  vision/CEM clean; all downstream the same NaN.
+
+### The discovery (why this was hard)
+- `lidar_isolate_h100.py` (per-sub-layer, all-zero/empty-cloud CUDA bf16): `pillar_mlp`
+  clean, `voxelize` clean, **`conv_stack` NaN**, `proj` NaN.
+- BUT standalone CUDA-bf16 repros (`bn_zero_cuda.py`, `lidar_layers_h100.py`) of the
+  exact same conv_stack arch on the same zero input were **clean** (train mode,
+  requires_grad, fp32→bf16 cast). So it was NOT a bf16/CUDA kernel bug.
+- Dumping actual loaded params (`lidar_nan_params.py`) revealed the model's own state:
+  - `fusion.norm.weight`/`.bias` (fusion LayerNorm) = **NaN**.
+  - `lidar_encoder.backbone.conv_stack.*.weight` (BatchNorm) = **~8e35 garbage**
+    (should be 1.0 fresh); BN running stats still 0/1/0 (fresh), conv weights look normal
+    (~0.08 kaiming).
+
+### Root cause
+`AutoModelForVision2Seq.from_pretrained(..., low_cpu_mem_usage=True,
+device_map={"": rank})` first moves the whole model to the **meta device**, which
+**discards the proper initialization AerialVLAModel.__init__ did** (BN weight=1,
+LayerNorm weight=1). HF then materializes only checkpoint-present params. The fresh
+`fusion_module` params are absent from the ckpt → they are materialized as
+**uninitialized raw memory** (NaN / huge garbage). The `.to(base_dtype)` dtype-cast in
+`AerialVLAModel.__init__` only changed dtype, baking in the garbage. Standalone repros
+never exercised the meta-discard path, so they stayed clean.
+
+Mechanism of NaN entry: conv_stack BN has weight/bias ~8e35; with a non-zero BEV the
+`x_hat*weight+bias` overflows bf16 (max ~3.39e38) → NaN → propagates through proj → loss.
+
+### Fix
+- **`models/aerial_vla_model.py`**: added `AerialVLAModel.reset_fusion_parameters()`
+  that deterministically re-inits cem/lidar_encoder/fusion:
+  - Conv2d/Linear: `nn.init.kaiming_uniform_(weight, a=sqrt(5))` + fan-in bias bound.
+  - BatchNorm2d: `reset_parameters()` (weight=1, bias=0, running stats zeroed).
+  - LayerNorm: weight=1, bias=0.
+- **`src/train_step_a.py`**: call
+  `peft_raw.fusion_module.reset_fusion_parameters()` immediately after `get_peft_model`
+  (the discard happens at load; reset must happen after).
+- Added `math` import to `models/aerial_vla_model.py`.
+
+### Verification
+- New regression tests in `tests/test_aerovla_3d_fusion.py`:
+  `test_reset_fusion_parameters_recovers_nan` (corrupt→NaN→reset→0 NaN, BN=1, LN=1,
+  proj sane) and `test_reset_fusion_parameters_bf16` (reset preserves bf16 dtype).
+  Local suite now **10/10 pass** (was 8/8).
+- **H100 smoke RE-RUN PASSED**: `[stepA] step=1/2 loss=10.7706`, `step=2/2 loss=14.6890`
+  (finite; per-step value varies with random data), ckpt saved, exit 0.
+
+### Runbook (repeat this)
+1. Edit anything in the fusion stack → re-run local tests:
+   `/media/sanati/DriveE/miniconda3/envs/aero_vla/bin/python -m pytest tests/test_aerovla_3d_fusion.py -q`
+2. scp `models/aerial_vla_model.py`, `src/train_step_a.py` → H100.
+3. H100: `cd /workspaces/AeroVLA && setsid nohup bash .stepa_smoke/run.sh >.stepa_smoke/smoke2.log 2>&1 &`
+4. Watch `grep '\[stepA\]' .stepa_smoke/smoke2.log` → expect finite losses, `done. final checkpoint`.
+
+### Files changed
+- `models/aerial_vla_model.py` (+`reset_fusion_parameters`, +`import math`)
+- `src/train_step_a.py` (+reset call after `get_peft_model`)
+- `tests/test_aerovla_3d_fusion.py` (+2 tests)

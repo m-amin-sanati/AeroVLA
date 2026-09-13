@@ -20,6 +20,8 @@ falls back to the standard (no-LiDAR) path, preserving the existing eval
 pipeline exactly.
 """
 
+import math
+
 import torch
 import torch.nn as nn
 
@@ -60,7 +62,14 @@ class AerialVLAModel(nn.Module):
                            through to `base_model`.
         """
         super().__init__()
-        self.base_model = base_model
+        # Store `base_model` OUTSIDE the nn.Module child registry. The parent
+        # (Prismatic/OpenVLA) also owns *this* module (`fusion_module = self`
+        # on the parent), so registering `base_model` as a submodule here would
+        # create a reference cycle that makes torch `state_dict()`/`parameters()`
+        # recurse infinitely (RecursionError during `from_pretrained`). All uses
+        # are plain attribute reads (vision_backbone/projector/language_model),
+        # so a non-registered attribute is fully sufficient.
+        object.__setattr__(self, "base_model", base_model)
         self.enable_fusion = enable_fusion
         self.d_vis = d_vis
 
@@ -86,6 +95,53 @@ class AerialVLAModel(nn.Module):
                 use_smca_mask=use_smca_mask,
                 smca_sigma=smca_sigma,
             )
+
+        # Newly-initialized additive modules default to fp32, while the rest of
+        # the loaded model is e.g. bf16 (torch_dtype). device_map only casts
+        # *checkpoint-loaded* params, not these fresh ones, so we must align the
+        # fusion stack to the base model's dtype here -- otherwise forward gets
+        # "mixed dtype" errors or NaNs on GPU (lidar_encoder fp32 weights vs
+        # bf16 point input).
+        if enable_fusion:
+            base_dtype = next(base_model.parameters()).dtype
+            for m in (self.cem, self.lidar_encoder, self.fusion):
+                m.to(base_dtype)
+
+    def reset_fusion_parameters(self, init_fn=nn.init.kaiming_uniform_) -> None:
+        """Deterministically re-initialize the freshly-created fusion modules.
+
+        When the model is (re)loaded with `low_cpu_mem_usage=True` and
+        `device_map`, the HF loader moves the *entire* module to the meta
+        device first (discarding the proper `__init__` values), then only
+        materializes the parameters that appear in the checkpoint. The fusion
+        stack (cem / lidar_encoder / fusion) is NOT in the checkpoint, so those
+        params come back as *uninitialized raw memory* -- which shows up as NaN
+        weights or garbage (e.g. BatchNorm weight ~8e35, LayerNorm weight=NaN)
+        and NaNs the whole forward. Call this once after `from_pretrained` to
+        restore a deterministic, valid initialization before any use.
+
+        Deleting `init_fn` callables keep a clean signature for `torch.nn.Module`.
+        """
+        if not self.enable_fusion:
+            return
+        with torch.no_grad():
+            for m in (self.cem, self.lidar_encoder, self.fusion):
+                for module in m.modules():
+                    # Convolutions / linear: mimic `nn.Conv2d`/`nn.Linear` reset.
+                    if isinstance(module, (nn.Conv2d, nn.Linear)):
+                        nn.init.kaiming_uniform_(module.weight, a=math.sqrt(5))
+                        if module.bias is not None:
+                            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(module.weight)
+                            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+                            nn.init.uniform_(module.bias, -bound, bound)
+                    # BatchNorm: weight=1, bias=0, running stats re-zeroed.
+                    elif isinstance(module, nn.BatchNorm2d):
+                        module.reset_parameters()
+                    # LayerNorm: weight=1, bias=0.
+                    elif isinstance(module, nn.LayerNorm):
+                        if module.elementwise_affine:
+                            module.weight.data.fill_(1.0)
+                            module.bias.data.zero_()
 
     def encode_visual(
         self,

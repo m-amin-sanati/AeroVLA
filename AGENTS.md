@@ -220,7 +220,17 @@ When something becomes deprecated or is replaced:
   = -100) → BC NLL supervises only actions; fusion inserts its own −100 patch label at
   pos 1 (`models/aerial_vla_model.py:203-209`). **Real fused fwd/bwd must run on the
   H100** (6 GB local VRAM too small); smoke with `--micro_batch 1 --max_steps 2`.
-  Test (local CPU): 8/8 pass; `python src/train_step_a.py --help` works.
+  Test (local CPU): 10/10 pass; `python src/train_step_a.py --help` works.
+- **CRITICAL — fusion params are discarded by the HF loader (fixed 2026-09-13)**:
+  `from_pretrained(low_cpu_mem_usage=True, device_map=...)` moves the whole model to
+  **meta** (discarding `AerialVLAModel.__init__` init), then materializes only
+  checkpoint-present keys. The fresh `fusion_module` params are NOT in the ckpt →
+  come back as **uninitialized memory** (BN weight ~8e35, LayerNorm weight=NaN) →
+  `lidar_encoder`/`loss` become NaN on CUDA bf16 (NaN entered exactly at
+  `lidar_encoder` output). **FIX: call `peft_raw.fusion_module.reset_fusion_parameters()`
+  immediately after `get_peft_model` in every script that loads the fused model.**
+  (`models/aerial_vla_model.py`; standalone BN/Conv on all-zero input are clean, so
+  the load path is the only trigger.) H100 smoke now passes: loss=10.77→14.69 finite.
 
 ---
 

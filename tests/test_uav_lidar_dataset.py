@@ -132,6 +132,27 @@ def test_camera_intrinsics_is_inverse():
                               Kinv_emitted, atol=1e-5), "camera_intrinsics must be K^-1"
 
 
+def test_collator_intrinsics_bf16_inverse():
+    """linalg.inv has no bf16 kernel; the collator must invert in fp32 then cast.
+
+    Regression for the H100 training crash
+    `RuntimeError: linalg.inv: Low precision dtypes not supported. Got BFloat16`
+    (datasets/uav_lidar_dataset.py, `UAVLiDARCollator.__call__`).
+    """
+    import numpy as np
+    with tempfile.TemporaryDirectory() as tmp:
+        make_episode_tree(tmp, "aaa", with_lidar=True)
+        ds = UAVLiDARDataset(make_samples(tmp), data_root=tmp, max_points=10000)
+        coll = UAVLiDARCollator(device="cpu", dtype=torch.bfloat16)
+        batch = coll([ds[0]])
+        assert batch["camera_intrinsics"].dtype == torch.bfloat16
+        # K * K^-1 ~= I in fp32 (bf16 rounding allows ~1e-2 error on the round trip).
+        I = torch.eye(3)
+        K = torch.as_tensor(np.asarray(ds[0]["camera_intrinsics"]).astype(np.float32))
+        Kinv = batch["camera_intrinsics"][0].float()
+        assert torch.allclose(K @ Kinv, I, atol=5e-2), "K @ K^-1 must be identity after bf16 cast"
+
+
 def test_require_lidar_strict():
     with tempfile.TemporaryDirectory() as tmp:
         make_episode_tree(tmp, "aaa", with_lidar=False)

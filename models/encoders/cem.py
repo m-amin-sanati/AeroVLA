@@ -122,12 +122,13 @@ class CoordinatesEncodingModule(nn.Module):
         """
         B, N_vis, _ = pixel_coords_norm.shape
         device, dt = pixel_coords_norm.device, pixel_coords_norm.dtype
+        D = depths.shape[2]  # derive from input so it always matches the collator
 
         # Build homogeneous pixel vector p_k(u,v) = (u, v, 1) per token, then
         # lift to a per-token *number-of-depth-samples* copy for the matmul.
         ones = torch.ones((B, N_vis, 1), dtype=dt, device=device)
         pix_hom = torch.cat([pixel_coords_norm, ones], dim=-1)  # [B, N_vis, 3]
-        pix_hom = pix_hom.unsqueeze(2).repeat(1, 1, self.num_depth_samples, 1)  # [B, N_vis, D, 3]
+        pix_hom = pix_hom.unsqueeze(2).repeat(1, 1, D, 1)  # [B, N_vis, D, 3]
 
         # [B, N_vis, D, 3] = K^-1 (B,3,3) @ pix_hom (B,N_vis,D,3)  (row vector * K^-1^T)
         K_inv = intrinsics_inv
