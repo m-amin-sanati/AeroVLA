@@ -185,15 +185,27 @@ When something becomes deprecated or is replaced:
   deliverable: `models/encoders/cem.py` (`CoordinatesEncodingModule`), 
   `models/encoders/lidar_encoder.py` (`LiDAREncoder`), `models/fusion/cross_attention_fusion.py`
   (`SoftLiDARVisualCrossAttention`), `models/aerial_vla_model.py` (`AerialVLAModel`).
-  Wraps the real `openvla-7b` Prismatic model (fused DINOv2+SigLIP, `d_vis=11776` for
-  224 px, projector is the fine-tuned `checkpoints/` one). Optional hook in the nested
-  `openvla-7b/` repo (its own git repo, not the parent): **committed as `df5d0eb`**
+  Wraps the real `openvla-7b` Prismatic model (fused DINOv2+SigLIP, **`d_vis=2176`** for
+  224 px = 1024 DINOv2 + 1152 SigLIP, **N_vis=256** = 16×16 patch grid, patch 14;
+  projector is the fine-tuned `checkpoints/` one `fc1[8704,2176]`). Optional hook in the
+  nested `openvla-7b/` repo (its own git repo, not the parent): **committed as `df5d0eb`**
   (`config.enable_3d_fusion`, default False) + `forward_with_3d_fusion()`; original
   `forward()` byte-for-byte unchanged (+82/-0). `openvla-7b/` is git-ignored in the
   parent and is a nested LFS repo — DO NOT `git add .` or `git reset` inside it (14 GB
   LFS smudge stalls); the one committed change is already captured. Test:
-  `tests/test_aerovla_3d_fusion.py` (local CPU). `src/aerovla_dataset.py` has NO
-  lidar input yet (next step: AirSim `Lidar1` cloud + intrinsics/extrinsics).
+  `tests/test_aerovla_3d_fusion.py` (local CPU).
+- **UAVLiDAR data pipeline (since 2026-09-13, tracked `datasets/`)**: `datasets/uav_lidar_dataset.py`
+  (`UAVLiDARDataset` + `UAVLiDARCollator` + `quantize_action`) feeds real AirSim episode
+  trees (front/down PNGs + `log/<frame>.json`) into `AerialVLAModel.forward`. Contract:
+  **`camera_intrinsics` must be K⁻¹** (`CEM.image_pe` does `K_inv @ pix_hom` at
+  `models/encoders/cem.py:105,133-136`) — collator inverts K. Fused input is
+  channel-stacked **[B,6,224,224]** (same image twice: ImageNet→DINOv2, [0.5]→SigLIP,
+  per `openvla-7b/processing_prismatic.py`). Current eval logs have **no lidar key**
+  (sensors = `['state','imu']`) → `require_lidar=False` zero-cloud fallback (strict mode
+  available). `lidar_points` [B,N_max,4] (x,y,z,intensity) padded 20000; N_lidar=64×64=4096
+  BEV pillars. Old logs load fine; fresh lidar-enabled logs validate the real path.
+  Test: `tests/test_uav_lidar_dataset.py` (4/4 pass, local CPU, pytest installed in the
+  `aero_vla` venv).
 
 ---
 

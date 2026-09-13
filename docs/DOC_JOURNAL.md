@@ -1511,3 +1511,57 @@ rendering bugs surfaced once it connected to a real scene + beacon.
 - When ready: enable `config.enable_3d_fusion=True` in training config; train adapters.
 - Consider upgrading `PointPillarsEncoder` to a real topK scatter (research-simplified
   per-voxel max loop is slow).
+
+---
+
+## Session 2026-09-13 (2nd) — UAVLiDARDataset + collator (LiDAR-visual data pipeline)
+
+### Goal
+- Build the dataset+collator that feeds real AirSim episode trees (image + LiDAR)
+  into `AerialVLAModel.forward(...)`, fixed against the verified model contract.
+
+### What I did
+- **Verified model contract**:
+  - Fused backbone `cat → [B,256,2176]` (`openvla-7b/modeling_prismatic.py`) → **N_vis=256** (16×16, patch 14) and **d_vis=2176** (1024 DINOv2 + 1152 SigLIP), NOT 11776. Confirmed projector `fc1 [8704,2176]` in `checkpoints/adapter_model.safetensors`.
+  - **K⁻¹ bug confirmed real**: `AerialVLAModel.forward` passes `camera_intrinsics`
+    straight to `CEM.image_pe(px, intrinsics_inv, ...)` (`models/encoders/cem.py:105`);
+    CEM does `K_inv @ pix_hom` (:133-136). Collator now emits **K⁻¹**.
+  - Processor contract: `openvla-7b/processing_prismatic.py` `apply_transform` stacks
+    the SAME image twice (ImageNet → DINOv2, [0.5] → SigLIP) → **channel-stacked [6,224,224]**.
+  - Current eval logs have **no lidar** (32,883 frames, sensors keys `['state','imu']`) →
+    added `require_lidar=False` zero-cloud fallback.
+- **Created `datasets/` package**:
+  - `datasets/uav_lidar_dataset.py` — `UAVLiDARDataset` + `UAVLiDARCollator` +
+    `quantize_action` + `build_uav_lidar_batch`.
+    - Collator `_process_images` → **explicit 6-channel** [B,6,224,224] via processor
+      (if given) else same resize + double-normalize (DINO vs SigLIP stats).
+    - **K⁻¹ emitted** under `camera_intrinsics` (inverted in `__call__`).
+    - `compute_cem_rays` pixel-coord grid fixed: patch centres = 224-wide final image
+      → uu/vv span [0.03125, 0.96875] (was [0,0.5] bug).
+    - `require_lidar` flag; missing-lidar → clean zero cloud, strict raises.
+    - docstring updated (sample `camera_intrinsics` = K^1 = inverse).
+  - `datasets/__init__.py` — exports.
+- **Created `tests/test_uav_lidar_dataset.py`**: synthetic episode tree (front/down
+  PNGs + `log/<frame>.json` with/without lidar), asserts dataset shapes (N_vis=256,
+  N_lidar=4096, max_points), K⁻¹ inverse property, strict-mode KeyError, action bins.
+
+### Problems faced
+- `test_uav_lidar_dataset.py` run via `python -m pytest` → `No module named 'pytest'`
+  in the `aero_vla` env.
+- Probe revealed `composite_image` was [B,3,224,224] (fallback path) and pixel-coord
+  grid only spanned [0,0.5] (img_w=W*2 bug).
+
+### Solutions applied
+- `pip install pytest` into `/media/sanati/DriveE/miniconda3/envs/aero_vla` (writable venv).
+- Rewrote `_process_images` to the fine-tuned training convention (same-image double
+  norm → 6ch) and fixed `compute_cem_rays` to tile the full final-image grid.
+
+### Current state
+- 4/4 tests pass; fusion tests (`test_aerovla_3d_fusion.py`) still pass.
+- `datasets/` + test untracked, ready to commit.
+- Dirty (pre-existing, intentional): `airsim_plugin/settings/30001/settings.json`.
+
+### Next steps
+- Wire LiDAR into `src/aerovla_dataset.py`? (deferred — dataset is separate optional path).
+- Real-episode lidar validation when fresh lidar-enabled eval logs exist
+  (current 32,883-frame logs have no `lidar` key).

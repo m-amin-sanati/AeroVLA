@@ -106,6 +106,7 @@ Git status: 5 modified tracked files + several untracked new files/dirs.
 | `src/vlnce_src/eval_aerovla.py` | **2026-09-12 (part 12, `f76f09f`):** `_manual_takeover_active()` reads `/tmp/aerovla_manual.json`; step loop blocks with `while _manual_takeover_active(): time.sleep(0.2)` before `makeActions` so the autopilot does not fight a local human pilot. Added `import json`. |
 | `scripts/camera_viewer.py` | **2026-09-12 (part 12):** marked **SUPERSEDED** — see `scripts/mission_viewer.py`. Kept for reference. |
 | `models/` + `tests/test_aerovla_3d_fusion.py` | **2026-09-13 (research task):** first model-side code. New `models/encoders/cem.py`, `models/encoders/lidar_encoder.py`, `models/fusion/cross_attention_fusion.py`, `models/aerial_vla_model.py` (+ `__init__.py` exports), plus smoke test. See §13 for full description. |
+| `datasets/` + `tests/test_uav_lidar_dataset.py` | **2026-09-13 (2nd session, research task):** LiDAR-visual data pipeline feeding `AerialVLAModel.forward`. `datasets/uav_lidar_dataset.py` (`UAVLiDARDataset` + `UAVLiDARCollator` + `quantize_action`) + `datasets/__init__.py`. **K⁻¹ fix**: collator emits `camera_intrinsics` = inverse K (CEM does `K_inv @ pix_hom` at `models/encoders/cem.py:105`). Fused input = channel-stacked **[B,6,224,224]** (same image twice: ImageNet→DINOv2, [0.5]→SigLIP). **N_vis=256** patch grid (16×16, patch 14), N_lidar=4096 BEV pillars, `max_points=20000`. `require_lidar=False` zero-cloud fallback for old logs (current eval logs have no `lidar` key). 4/4 smoke tests pass. See §14b below. |
 
 ### Untracked / new files & dirs
 
@@ -490,7 +491,7 @@ optional). `aerovla_wrapper_ui.py` is pristine upstream (bf16). H100-only runtim
 New tracked `models/` tree + `tests/test_aerovla_3d_fusion.py` + local-only optional
 hook in `openvla-7b/modeling_prismatic.py`.
 
-### Module map (all `d_vis` = 11776 for dinosiglip-224; smoke tests use 64)
+### Module map (`d_vis` = 2176 for dinosiglip-224 = 1024 DINOv2 + 1152 SigLIP; N_vis=256 patches; smoke tests use a tiny fake backbone with SAME token count assumptions as the fused model)
 
 | File | Class | What |
 |------|-------|------|
@@ -536,12 +537,58 @@ hook in `openvla-7b/modeling_prismatic.py`.
 
 ### Known open items (research, not blockers)
 
-1. `src/aerovla_dataset.py` has **no lidar input yet** — needs AirSim `Lidar1`
-   cloud → padded `lidar_points`/`valid` (client read at
-   `AirVLNSimulatorClientTool_AeroVLA.py:93` `getLidarData('Lidar1')`).
+1. `src/aerovla_dataset.py` (the LoRA/eval dataset) still has **no lidar input** — the
+   new `datasets/uav_lidar_dataset.py` is a SEPARATE optional pipeline; teaching it to
+   the eval dataset is deferred. (AirSim `Lidar1` client read at
+   `AirVLNSimulatorClientTool_AeroVLA.py:93` `getLidarData('Lidar1')`.)
 2. Intrinsics/extrinsics source: `AIRSIM_SETTINGS_TEMPLATE` / `CameraExtrinsics`
-   (server tool) not yet fed to the dataset.
+   (server tool) — `UAVLiDARDataset` synthesizes them (centred camera, FOV-based K,
+   identity rotation vs body) with optional `camera_calib_dir`/`K_override`/`T_override`.
 3. `PointPillarsEncoder` per-voxel python max loop is slow — replace with a real
    top-K scatter for training-scale throughput.
 4. No training run yet; `enable_3d_fusion` default False keeps existing LoRA
    eval byte-identical.
+5. Real-episode lidar validation pending: current `eval_results` logs (32,883 frames)
+   have **no `lidar` key** (sensors `['state','imu']`); the fallback path (zero cloud)
+   is what `UAVLiDARDataset` uses today.
+6. N_vis=256 requires a 224x224 final input; the fused `cat → [B,256,2176]` was
+   confirmed in `openvla-7b/modeling_prismatic.py` (patch 14, 16×16 grid).
+
+---
+
+## §14b (2026-09-13) UAVLiDARDataset + collator — LiDAR-visual data pipeline
+
+New tracked `datasets/` package feeding real AirSim episode trees into
+`AerialVLAModel.forward`, fixed against the verified model contract.
+
+### Files
+
+- `datasets/uav_lidar_dataset.py` — `UAVLiDARDataset` (loads front/down PNGs +
+  `log/<frame>.json`, synthesizes AirSim calibration) + `UAVLiDARCollator`
+  (images → [B,6,224,224], numpy → tensors, tokenizes prompt+action) +
+  `quantize_action` + `build_uav_lidar_batch`.
+- `datasets/__init__.py` — exports.
+- `tests/test_uav_lidar_dataset.py` — synthetic episode-tree smoke test, 4/4 pass.
+
+### Corrections locked into the pipeline (verified this session)
+
+- **`camera_intrinsics` = K⁻¹** (CEM contract, `models/encoders/cem.py:105,133-136`).
+  Sample stores K; collator `__call__` emits `torch.linalg.inv(...)`.
+- **Fused input = channel-stacked [B,6,224,224]** (ImageNet stats → DINOv2 stream,
+  [0.5,0.5,0.5] → SigLIP stream, same resized image twice — the fine-tuned training
+  convention in `src/train_aerovla.py`+`src/aerovla_dataset.py`, matching
+  `openvla-7b/processing_prismatic.py` `apply_transform`). Collator uses a real
+  processor if given, else replicates resize + double-normalize.
+- **N_vis = 256** (16×16 patch grid, patch 14 on 224) and **d_vis = 2176**
+  (1024 DINOv2 + 1152 SigLIP). `compute_cem_rays` pixel-coord grid now tiles the full
+  final image → uu/vv ∈ [0.03125, 0.96875].
+- `lidar_points` [B,N_max,4] (x,y,z,intensity) padded `max_points=20000`;
+  `point_cloud_range=(0,0,-1.5,20,20,1)`, `voxel_size=(0.4,0.4,1.0)`,
+  `grid_res=(64,64)` → `N_lidar=4096`.
+
+### Old-log fallback
+
+Current `eval_results/checkpoints/seen_valset/*/<episode>/log/` frames have sensors
+`['state','imu']` only (no `lidar`). `UAVLiDARDataset(lidar_sensor_key="lidar",
+require_lidar=False)` emits a **zero cloud** for those; `require_lidar=True` raises
+KeyError (strict mode for fresh lidar-enabled captures).
