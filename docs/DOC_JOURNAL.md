@@ -1776,3 +1776,45 @@ run on the user's own AirSim episodes on the H100; then Option B.
 - Next checkpoint saved at step 2000 (`checkpoints/aero_vla_step_a/step_2000`).
 - Then start Option B (InfoNCE pre-alignment → BC fine-tune).
 - Update `docs/PROJECT_HANDOFF.md` + this journal at session end.
+
+---
+
+## Session 2026-09-13 AM (cont. — fog/alt/lidar env work)
+
+### Goal
+After the live visual-only Option A run finishes: modify env conditions (fog + max
+10 m altitude AGL + existing dense forest obstacles) and re-capture episodes WITH
+lidar, then re-run Option A with `require_lidar=True`.
+
+### What I did (investigation)
+- Confirmed existing H100 episodes have `sensors: ['cameras','imu','state']` (NO
+  lidar) → current Option A run is a visual-only baseline.
+- Mapped full capture pipeline: eval (`eval_aerovla.py` → `env_uav.makeActions` →
+  `AirVLNSimulatorClientTool_AeroVLA.move_path_by_actions`) flies the reference
+  `trajectory_raw_detailed` from `merged_data.json`, and on episode end
+  `save_to_dataset_eval` writes a NEW tree (`log/` + images + `object_description.json`)
+  to `eval_save_path/<prefix>uuid/`. That new tree CAN include lidar (the client's
+  `Lidar(BaseSensor).retrieve()` is already in `move_path_by_actions` + `getSensorInfo`).
+- AirSim weather: `simEnableWeather` + `simSetWeatherParameter(WeatherParameter.Fog=7)`
+  exists in the installed airsim client (python3.10 site-packages).
+- Reference path altitudes: NED z ∈ [−14.9, −29.9] (15–30 m AGL) → 10 m cap will
+  visibly clamp flight.
+- `map_spawnarea_info.json` has BrushifyForestPack entries (ground NED ≈ −10.6 to −32.1).
+- No native AirSim down-raycast (`simTraceLine` absent) → ground reference for the
+  altitude cap must come from the reference path's max z (ground-line proxy) per
+  episode, or a fixed per-map GROUND_Z.
+
+### Plan (per user decision: fog + alt-cap + re-capture, existing forest obstacles)
+1. Fog: add a client-side `simEnableWeather(True)` + `simSetWeatherParameter(Fog, 1.0)`
+   callable from the capture/eval path (or a server-side hook) — verify it renders
+   (CPU llvmpipe caveat).
+2. Altitude cap: clamp `target_z` in `move_path_by_actions` so drone never flies
+   above `GROUND_Z − 10`.
+3. Re-capture: run a fresh eval/capture pass with the current client (lidar on),
+   writing new episode trees; rebuild split; rerun train.
+4. Then Option B InfoNCE pre-alignment → BC fine-tune.
+
+### Problems & open questions
+- Fog rendering on CPU (llvmpipe) backend unverified — may need UE4-level weather
+  injection instead of AirSim weather API.
+- Ground reference for 10 m cap TBD (per-episode ground proxy vs per-map const).
