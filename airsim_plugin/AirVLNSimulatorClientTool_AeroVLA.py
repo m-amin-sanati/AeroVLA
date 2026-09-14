@@ -319,9 +319,9 @@ class AirVLNSimulatorClientTool:
         except Exception as e:
             logger.error(e)
     
-    def move_path_by_actions(self, actions_list, start_states):
+    def move_path_by_actions(self, actions_list, start_states, ground_zs=None, max_alt_agl=None):
 
-        def move_path(airsim_client: airsim.VehicleClient, action_dict, start_state):
+        def move_path(airsim_client: airsim.VehicleClient, action_dict, start_state, ground_z=None, max_alt=None):
 
             results = []
             state_sensor = State(airsim_client, )
@@ -358,7 +358,14 @@ class AirVLNSimulatorClientTool:
             target_x = curr_pos.x_val + dx
             target_y = curr_pos.y_val + dy
             target_z = curr_pos.z_val + dz
-            
+
+            # Max-altitude-above-ground clamp (NED: z<0 is up; "too high" = z too
+            # negative). If a ground reference is supplied, cap the commanded NED z
+            # so the drone never plans to fly higher than `max_alt` meters AGL.
+            # Backward compatible: when ground_zs/max_alt_agl is None, no clamping.
+            if ground_z is not None and max_alt is not None:
+                target_z = max(target_z, ground_z - max_alt)
+
             horizontal_dist = np.sqrt(dx**2 + dy**2)
             vertical_dist = abs(dz)
             total_dist = np.sqrt(horizontal_dist**2 + vertical_dist**2)
@@ -428,7 +435,9 @@ class AirVLNSimulatorClientTool:
                     MyThread(move_path, 
                     (self.airsim_clients[index_1][index_2], 
                     actions_list[index_1][index_2], 
-                    start_states[index_1][index_2]))
+                    start_states[index_1][index_2],
+                    ground_zs[index_1][index_2] if ground_zs is not None else None,
+                    max_alt_agl))
                 )
         for index_1, _ in enumerate(threads):
             for index_2, _ in enumerate(threads[index_1]):
@@ -458,6 +467,31 @@ class AirVLNSimulatorClientTool:
             return None
         return result_poses_list
     
+    def set_weather_fog(self, fog_val=None):
+        """Enable dense fog on every connected scene (best-effort, non-fatal).
+
+        AirSim weather is client-driven: simEnableWeather(True) plus
+        simSetWeatherParameter(WeatherParameter.Fog, val). We verified the fog
+        renders on the CPU/llvmpipe backend (dark, low-contrast frames). Fog does
+        NOT attenuate lidar - lidar keeps returning clean geometry, which is the
+        exact motivating scenario for the LiDAR-visual fusion (visual degrades,
+        lidar is unaffected).
+        """
+        if fog_val is None:
+            fog_val = float(os.environ.get('AEROVLA_ENV_FOG', 1.0))
+        fog_val = float(fog_val)
+        for index_1, _ in enumerate(self.airsim_clients):
+            for index_2, _ in enumerate(self.airsim_clients[index_1]):
+                client = self.airsim_clients[index_1][index_2]
+                if client is None:
+                    continue
+                try:
+                    client.simEnableWeather(True)
+                    client.simSetWeatherParameter(airsim.WeatherParameter.Fog, fog_val)
+                    logger.info('set fog={} on scene [{},{}]'.format(fog_val, index_1, index_2))
+                except Exception as e:
+                    logger.warning('set_weather_fog failed scene[{},{}]: {}'.format(index_1, index_2, e))
+
     def setPoses(self, poses: list) -> bool:
         def _setPoses(airsim_client: airsim.VehicleClient, pose: airsim.Pose) -> None:
             if airsim_client is None:

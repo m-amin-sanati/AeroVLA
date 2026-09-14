@@ -283,6 +283,8 @@ class AirVLNENV:
                 print('machines_info:', self.machines_info)
                 self.simulator_tool = AirVLNSimulatorClientTool(machines_info=self.machines_info)
                 self.simulator_tool.run_call()
+                if getattr(args, 'env_fog', None) is not None:
+                    self.simulator_tool.set_weather_fog(args.env_fog)
                 break
             except Exception as e:
                 logger.error("启动场景失败 {}".format(e))
@@ -424,7 +426,22 @@ class AirVLNENV:
 
         start_states = self._get_current_state()
 
-        results = self.simulator_tool.move_path_by_actions(actions_list=actions_args, start_states=start_states)  # control AirSim to move
+        # Per-scene ground reference for the altitude cap. The drone's own
+        # reference trajectory (raw GT path) reaches its lowest physical point
+        # (max NED z) near takeoff/landing; use it as a ground proxy so a 10 m
+        # cap stays relative to the local terrain rather than an absolute plane.
+        ground_zs = [[None for _ in item['open_scenes']] for item in self.machines_info]
+        max_alt = getattr(args, 'max_alt_agl', None)
+        if max_alt is not None:
+            cnt = 0
+            for index_1, item in enumerate(self.machines_info):
+                for index_2, _ in enumerate(item['open_scenes']):
+                    traj = self.sim_states[cnt].raw_trajectory_info.get('trajectory', [])
+                    if traj:
+                        ground_zs[index_1][index_2] = max(float(f['position'][2]) for f in traj)
+                    cnt += 1
+
+        results = self.simulator_tool.move_path_by_actions(actions_list=actions_args, start_states=start_states, ground_zs=ground_zs, max_alt_agl=max_alt)  # control AirSim to move
 
         batch_results = []
         batch_iscollision = []

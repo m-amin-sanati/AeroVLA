@@ -21,6 +21,9 @@ class CommonArguments:
     maxInput: int = field(default=500, metadata={"help": "max input instruction"})
     maxWaypoints: int = field(default=500, metadata={"help": 'max action sequence'})
 
+    max_alt_agl: Optional[float] = field(default=None, metadata={"help": "max flight altitude above ground (meters); None = no cap. Clamps commanded NED z in move_path_by_actions."})
+    env_fog: Optional[float] = field(default=None, metadata={"help": "AirSim Fog weather parameter in [0,1]; None = weather off. Applied to every scene right after it opens."})
+
     dagger_it: int = field(default=1)
     epochs: int = field(default=10)
     lr: float = field(default=0.00025, metadata={"help": "learning rate"})
