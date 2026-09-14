@@ -278,7 +278,7 @@ if [ ${NO_EVAL} -eq 0 ]; then
   # NOTE: run_eval.sh runs REMOTELY and writes /tmp/aerovla_eval_<PORT>.pid on
   # the H100. We verify it exists via ssh. (It is NOT a local file.)
   timeout 40 ssh -o ConnectTimeout=15 -o LogLevel=ERROR "${H100}" \
-    "cd /workspaces/AeroVLA && AEROVLA_MAP=${MAP} bash scripts/run_eval.sh ${LOCAL_PORT} /tmp/split_eval.log" \
+    "cd /workspaces/AeroVLA && AEROVLA_MAP=${MAP} AEROVLA_ENV_FOG=${AEROVLA_ENV_FOG:-1.0} AEROVLA_MAX_ALT_AGL=${AEROVLA_MAX_ALT_AGL:-10} bash scripts/run_eval.sh ${LOCAL_PORT} /tmp/split_eval.log" \
     > /tmp/aerovla_eval_launch.log 2>&1 || true
   REMOTE_PID="$(timeout 15 ssh -o ConnectTimeout=10 -o LogLevel=ERROR "${H100}" \
     "cat /tmp/aerovla_eval_${LOCAL_PORT}.pid 2>/dev/null" 2>/dev/null | grep -E '^[0-9]+$' | head -1 || true)"
@@ -292,6 +292,7 @@ if [ ${NO_EVAL} -eq 0 ]; then
 else
   echo "==> (--no-eval) skipping H100 eval client. Start it later manually:"
   echo "    ssh ${H100} 'cd /workspaces/AeroVLA && AEROVLA_MAP=${MAP} bash scripts/run_eval.sh ${LOCAL_PORT}'"
+  echo "    (env re-capture knobs: AEROVLA_ENV_FOG=1.0 AEROVLA_MAX_ALT_AGL=10)"
 fi
 
 cat <<EOF

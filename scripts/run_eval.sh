@@ -30,6 +30,10 @@ PIDFILE="/tmp/aerovla_eval_${PORT}.pid"
 MAP="${AEROVLA_MAP:-BrushifyCountryRoads}"
 EVAL_SAVE_DIR="./eval_results/checkpoints/seen_valset/${MAP}"
 EVAL_JSON="./data/uav_dataset/seen_valset_splits/${MAP}.json"
+# Env re-capture knobs (fog + 10m altitude cap are the agreed env-mod scope).
+# Override with AEROVLA_ENV_FOG / AEROVLA_MAX_ALT_AGL. Passed to eval_aerovla.py.
+ENV_FOG="${AEROVLA_ENV_FOG:-1.0}"
+ENV_MAX_ALT_AGL="${AEROVLA_MAX_ALT_AGL:-10}"
 
 chmod -R a+rX "$PROJECT_ROOT" 2>/dev/null || true
 cd "$PROJECT_ROOT"
@@ -76,6 +80,7 @@ su -s /bin/bash ubuntu -c "
     --eval_json_path ${EVAL_JSON} \
     --map_spawn_area_json_path ./data/meta/map_spawnarea_info.json \
     --object_name_json_path ./data/meta/object_description.json \
+    --env_fog ${ENV_FOG} --max_alt_agl ${ENV_MAX_ALT_AGL} \
     > $LOG 2>&1 & echo \$! > $PIDFILE
 " || { echo "FATAL: failed to launch eval on this host (are you on the H100?)"; exit 1; }
 
