@@ -1818,3 +1818,53 @@ lidar, then re-run Option A with `require_lidar=True`.
 - Fog rendering on CPU (llvmpipe) backend unverified — may need UE4-level weather
   injection instead of AirSim weather API.
 - Ground reference for 10 m cap TBD (per-episode ground proxy vs per-map const).
+
+## Session 2026-09-14 AM — AeroVLA re-capture launch with official LoRA
+
+### Goal
+Launch the split re-capture of BrushifyForestPack (444 eval episodes) on H100 with
+fog=1.0 + 10 m AGL alt-cap + **lidar** capture, using **AeroVLA's own pretrained LoRA**
+(NOT our `aero_vla_step_a` finetune), windowed + mission console per user.
+
+### What I did
+1. **Located AeroVLA's official checkpoint**: upstream README says pretrained LoRA from
+   Hugging Face `XuPeng23/AerialVLA` → `./checkpoints/aerial_vla/`. The HF repo keeps the
+   adapter under `aero_vla/` subfolder (`adapter_config.json` + `adapter_model.safetensors`,
+   462,655,064 B). Confirmed `adapter_config.json` is **identical** to ours (r=64, α=128,
+   `modules_to_save=["projector"]`, base `./openvla-7b`) → our Option A hyperparams match official.
+2. **Downloaded** it on H100 to `/workspaces/AeroVLA/checkpoints/aerial_vla/` (curl -L, verify size).
+3. **`run_eval.sh`**: added `MODEL_PATH=${AEROVLA_MODEL_PATH:-./checkpoints/aerial_vla}` and use it
+   for `--model_path` (was `./checkpoints` = our old finetune). Commit `02054b1`, pushed to fork,
+   H100 synced `git fetch fork && git reset --hard fork/main`.
+4. **Smoke-tested the official LoRA on H100**: base `openvla-7b` config has
+   `use_fused_vision_backbone=True` (dinosiglip, 6-channel input); `PrismaticImageProcessor`
+   returns `[1,6,224,224]` from the 224×448 mosaic → wrapper path is correct. Load OK
+   (base 5.9s, adapter 5.6s, CUDA bf16), generate works (`SMOKE OK`). Two smoke-script-only
+   bugs found+fixed along the way: (a) `models` import fails when script runs from `/tmp`
+   (sys.path[0]=/tmp) → explicit `sys.path.insert(0,"/workspaces/AeroVLA")`; (b)
+   `model.peft_config` is a dict in modern peft → index `["default"]`.
+5. **Launched split re-capture**: `bash scripts/split.sh 30000 BrushifyForestPack --windowed --cameras`.
+   Local server UP (`127.0.0.1:30000`), reverse tunnels, mission console. Remote eval started
+   manually after a transient `coder ssh` hang (H100: `run_eval.sh 30000`).
+
+### Verification (mission 1 `success_79312b39-…`, saved as `…/eval_results/checkpoints/seen_valset/BrushifyForestPack/`)
+- **Lidar CAPTURED**: `sensors` = `[state, imu, lidar]`, frame 0 has 144,969 lidar points.
+- **Fog ACTIVE**: front-cam mean RGB ≈ (126,113,118), std 22 → heavy whiteout, consistent with fog 1.0.
+- **Alt-cap wired**: H100 `env_uav.py:433-444` (`ground_zs` + `max_alt_agl` clamp) + fog at
+  `env_uav.py:286-287`; flown NED z range −12.34…16.34 (bounded).
+- **Pace**: ~3 eps done in first ~6 min, missions terminate early on success (Step ~38).
+  This is a **multi-hour run** (llvmpipe + 6-ch fused inference, ~2 min/ep → ~15-20 h for 444).
+
+### Problems faced & solutions
+- `coder ssh` transient hangs/timeouts during launch → retried; remote eval launched separately.
+- Smoke `split_with_sizes([3,3])` error was my fake 3-ch pixel_values; real processor yields 6-ch.
+- Missing `models` package in remote smoke → sys.path fix (eval itself is fine: `eval_aerovla.py:9`).
+
+### Current state
+- Run LIVE on H100 (pid `/tmp/aerovla_eval_30000.pid` = 418000); local stack pid
+  `/tmp/aerovla_split_30000.pid`. Results → `eval_results/checkpoints/seen_valset/BrushifyForestPack/`.
+- Progress `Completed: N / 444`. First ep verified (lidar+fog+alt-cap).
+
+### Next steps
+- Let run finish (multi-hour). If aborted: `kill $(cat /tmp/aerovla_split_30000.pid)` locally tears all.
+- Post-run: rebuild `merged_data.json` + split; Option A with `require_lidar=True`; then Option B.

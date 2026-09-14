@@ -107,6 +107,8 @@ Git status: 5 modified tracked files + several untracked new files/dirs.
 | `scripts/camera_viewer.py` | **2026-09-12 (part 12):** marked **SUPERSEDED** — see `scripts/mission_viewer.py`. Kept for reference. |
 | `models/` + `tests/test_aerovla_3d_fusion.py` | **2026-09-13 (research task):** first model-side code. New `models/encoders/cem.py`, `models/encoders/lidar_encoder.py`, `models/fusion/cross_attention_fusion.py`, `models/aerial_vla_model.py` (+ `__init__.py` exports), plus smoke test. See §13 for full description. |
 | `datasets/` + `tests/test_uav_lidar_dataset.py` | **2026-09-13 (2nd session, research task):** LiDAR-visual data pipeline feeding `AerialVLAModel.forward`. `datasets/uav_lidar_dataset.py` (`UAVLiDARDataset` + `UAVLiDARCollator` + `quantize_action`) + `datasets/__init__.py`. **K⁻¹ fix**: collator emits `camera_intrinsics` = inverse K (CEM does `K_inv @ pix_hom` at `models/encoders/cem.py:105`). Fused input = channel-stacked **[B,6,224,224]** (same image twice: ImageNet→DINOv2, [0.5]→SigLIP). **N_vis=256** patch grid (16×16, patch 14), N_lidar=4096 BEV pillars, `max_points=20000`. `require_lidar=False` zero-cloud fallback for old logs (current eval logs have no `lidar` key). 4/4 smoke tests pass. See §14b below. |
+| `scripts/run_eval.sh` | **2026-09-14 (commit `02054b1`):** `--model_path` now defaults to `${AEROVLA_MODEL_PATH:-./checkpoints/aerial_vla}` (AeroVLA **official** LoRA) instead of `./checkpoints` (our variant). Overridable via `AEROVLA_MODEL_PATH=./checkpoints/aero_vla_step_a` for our fine-tune. |
+| `checkpoints/aerial_vla/` (H100, untracked) | **2026-09-14:** official AeroVLA pretrained LoRA downloaded from HF `XuPeng23/AerialVLA` → `aero_vla/adapter_config.json` + `adapter_model.safetensors` (462,655,064 B). `adapter_config` IDENTICAL to ours (r=64, α=128, `modules_to_save=["projector"]`, base `./openvla-7b`). Re-capture eval uses `--model_path ./checkpoints/aerial_vla`. |
 
 ### Untracked / new files & dirs
 
@@ -192,7 +194,7 @@ fix 4–5 s `simGetImages` latency.
 | `eval_results/` | **DONE — synced locally (2026-09-09).** `eval_results/checkpoints/seen_valset/BrushifyCountryRoads/` = 123 episode dirs (50 `success_`, 73 plain → SR ≈ 40.65%). Each has `log/`, `ori_info.json`, `object_description.json`, camera dirs. No CSVs (metric.sh never ran). **2026-09-09 (cont.): the H100 copy of these 123 was moved to `BrushifyCountryRoads.bak_20260909_priorCPU123` and a fresh 123-ep split re-run is ACTIVE over the tunnel** (see "Split full-run state" row). |
 | Split tooling | `scripts/split.sh` (**2026-09-09 FIXED**: uses `aero_vla` python via `$SERVER_PYTHON` + deps check). Server tool canonical (2026-09-10): default `HOST=127.0.0.1`, optional `--host 0.0.0.0`, `--windowed` optional. Local server `0.0.0.0:30000` for split, reverse tunnel up, H100→`127.0.0.1:30000` = OK (verified 2026-09-09). |
 | Split tooling MSGPACK | **2026-09-09: H100 venv must have `msgpack==1.1.2`** (was 1.2.2 → msgpack-RPC framing breaks; server crashes `transport/tcp.py:27` on first real RPC; client silently dies). Fixed + verified via real RPC `ping`. |
-| Split full-run state | **2026-09-12 (part 12 + bugfix 2-4 + SPEED×2):** ForestPack eval `split.sh 30000 BrushifyForestPack --windowed --cameras` **RUNNING** with the mission console as the `--cameras` panel. Stack ALIVE: split 2257244, server 2257497, tunnel 2260184, viewer **2530679** (relaunched after eval restart — the pre-restart viewer wedged with a stale AirSim socket to the respawned scene on :30001; **always relaunch the mission console after an eval/server restart**). H100 eval pid **99768** (RESTARTED for speed×2 at ep 1/418 — old pid 39888 killed by user-approved restart; eval re-runs from scratch, no resume; dataset now shows 418 eps). **Drone speed doubled: `CRUISE_SPEED 1.0→2.0`** (`AirVLNSimulatorClientTool_AeroVLA.py:369`, commit `263c83d`): path per action unchanged, velocity 2.0 m/s, step cadence ~4s (was ~8-10s). Viewer window 1200x800 at `+1894+167` on `:1`, log 0 errors, all views live + UI freeze fixed (`ee54608`). Manual mode verified (`manual:true` blocks, `false` resumes). **Gotchas: `run_eval.sh` defaults `AEROVLA_MAP=BrushifyCountryRoads` — a plain relaunch crashes with missing `dataset_raw/BrushifyCountryRoads/.../mark.json`; must set `AEROVLA_MAP=BrushifyForestPack`.** Window moves on each relaunch — re-read `xwininfo`. Next: monitor eval; real M-keypress test optional. |
+| Split full-run state | **2026-09-14 (re-capture: fog 1.0 + 10 m AGL cap + lidar, official AeroVLA LoRA):** `split.sh 30000 BrushifyForestPack --windowed --cameras` **RUNNING**. Local server `0.0.0.0:30000` + reverse tunnels + mission console. H100 eval pid 418000 (`run_eval.sh 30000`, log `/tmp/split_eval.log`). `run_eval.sh --model_path` = **`./checkpoints/aerial_vla`** (official `XuPeng23/AerialVLA` LoRA, commit `02054b1`). Env knobs active (`AEROVLA_ENV_FOG=1.0 AEROVLA_MAX_ALT_AGL=10`; `env_uav.py:433-444` clamp + `:286-287` fog). **Mission 1 verified**: `sensors=[state,imu,**lidar**]` (144,969 pts frame 0), fog whiteout front-cam (mean ~126/113/118, std 22), official LoRA drives. Result dir `eval_results/checkpoints/seen_valset/BrushifyForestPack/` fills with `success_/oracle_/plain` episode trees (444 to do; multi-hour on llvmpipe). Teardown: `kill $(cat /tmp/aerovla_split_30000.pid)` (local) kills server+tunnel+viewer+remote eval. |
 
 **Split stack software state (2026-09-10):**
 | Component | State |
@@ -236,6 +238,18 @@ H100 stays push-readonly (see §12 #13 for base64 transfer helper). Both `main`s
 
 ## 9. Next steps (what the agent/run should do)
 
+> **CURRENT STATUS (2026-09-14): RE-CAPTURE RUNNING with OFFICIAL AeroVLA LoRA + fog + 10 m cap + lidar.**
+> `split.sh 30000 BrushifyForestPack --windowed --cameras` live; local server
+> `0.0.0.0:30000` + tunnels + mission console; H100 eval pid 418000
+> (log `/tmp/split_eval.log`), `run_eval.sh --model_path ./checkpoints/aerial_vla`
+> (official `XuPeng23/AerialVLA` LoRA, commit `02054b1`; H100 synced at `02054b1`).
+> Fog 1.0 + AGL-10 cap active (`env_uav.py:433-444,286-287`). Mission 1 verified:
+> `sensors=[state,imu,lidar]`, 144,969 pts frame 0, fog whiteout front-cam.
+> Progress `Completed: N / 444`. **Next:** monitor `/tmp/split_eval.log` to 444;
+> teardown `kill $(cat /tmp/aerovla_split_30000.pid)` if needed. **After capture:**
+> rebuild `merged_data.json` + split, re-run Option A with `require_lidar=True`, then
+> Option B (InfoNCE pre-align → BC).
+>
 > **CURRENT STATUS (2026-09-12, bugfix rounds 2+3): MISSION CONSOLE FULLY LIVE + FORESTPACK EVAL RUNNING.**
 > Launched `bash scripts/split.sh 30000 BrushifyForestPack --windowed --cameras`
 > (detached) → full stack up + H100 eval running. Mission console NOW actually
