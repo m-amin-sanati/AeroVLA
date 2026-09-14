@@ -34,6 +34,10 @@ EVAL_JSON="./data/uav_dataset/seen_valset_splits/${MAP}.json"
 # Override with AEROVLA_ENV_FOG / AEROVLA_MAX_ALT_AGL. Passed to eval_aerovla.py.
 ENV_FOG="${AEROVLA_ENV_FOG:-1.0}"
 ENV_MAX_ALT_AGL="${AEROVLA_MAX_ALT_AGL:-10}"
+# Checkpoint / adapter: default = AeroVLA's own pretrained LoRA (official
+# XuPeng23/AerialVLA download in checkpoints/aerial_vla/). Override with
+# AEROVLA_MODEL_PATH to use e.g. our fine-tune ./checkpoints/aero_vla_step_a.
+MODEL_PATH="${AEROVLA_MODEL_PATH:-./checkpoints/aerial_vla}"
 
 chmod -R a+rX "$PROJECT_ROOT" 2>/dev/null || true
 cd "$PROJECT_ROOT"
@@ -76,7 +80,7 @@ su -s /bin/bash ubuntu -c "
     --simulator_tool_port $PORT --DDP_MASTER_PORT 80005 --batchSize 1 --maxWaypoints 200 \
     --dataset_path ./dataset_raw/ \
     --eval_save_path ${EVAL_SAVE_DIR} \
-    --model_path ./checkpoints \
+    --model_path ${MODEL_PATH} \
     --eval_json_path ${EVAL_JSON} \
     --map_spawn_area_json_path ./data/meta/map_spawnarea_info.json \
     --object_name_json_path ./data/meta/object_description.json \
