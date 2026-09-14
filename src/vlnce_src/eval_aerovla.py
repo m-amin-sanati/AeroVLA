@@ -102,7 +102,9 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                 batch_state.predict_dones = model_stops  # Stop Signal from AerialVLA
                 
                 batch_state.update_metric()
-                
+
+                batch_state._write_metrics_beacon()
+
                 assist_notices = None # Absolutely no assist during evaluation
                 
                 inputs, _ = model_wrapper.prepare_inputs(

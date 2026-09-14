@@ -30,10 +30,10 @@ PIDFILE="/tmp/aerovla_eval_${PORT}.pid"
 MAP="${AEROVLA_MAP:-BrushifyCountryRoads}"
 EVAL_SAVE_DIR="./eval_results/checkpoints/seen_valset/${MAP}"
 EVAL_JSON="./data/uav_dataset/seen_valset_splits/${MAP}.json"
-# Env re-capture knobs (fog + 10m altitude cap are the agreed env-mod scope).
+# Env re-capture knobs (fog + altitude cap are the agreed env-mod scope).
 # Override with AEROVLA_ENV_FOG / AEROVLA_MAX_ALT_AGL. Passed to eval_aerovla.py.
 ENV_FOG="${AEROVLA_ENV_FOG:-1.0}"
-ENV_MAX_ALT_AGL="${AEROVLA_MAX_ALT_AGL:-10}"
+ENV_MAX_ALT_AGL="${AEROVLA_MAX_ALT_AGL:-5}"
 # Checkpoint / adapter: default = AeroVLA's own pretrained LoRA (official
 # XuPeng23/AerialVLA download in checkpoints/aerial_vla/). Override with
 # AEROVLA_MODEL_PATH to use e.g. our fine-tune ./checkpoints/aero_vla_step_a.

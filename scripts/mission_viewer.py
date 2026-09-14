@@ -8,6 +8,10 @@ Shows a single tkinter window with:
   * BOTTOM   - straight-down view (BottomCamera).
   * LIDAR    - live top-down projection of Lidar1, colored by height, with a
                cross-hair marker at the target's x/y when known.
+  * METRICS  - live per-mission mission metrics (step count, elapsed seconds,
+               collision count, termination class) polled from the H100 beacon
+               file /tmp/aerovla_metrics.json (same thread-safe polling pattern
+               as TARGET).
   * MODE     - AUTO (autopilot drives; the eval loop runs) / MANUAL (you drive,
                the H100 eval loop pauses and awaits hand-back). Toggle with M.
 
@@ -44,6 +48,8 @@ TICK_MS = 40
 
 TARGET_BEACON_LOCAL = "/tmp/aerovla_target.json"
 BEACON_REMOTE_PATH = "/tmp/aerovla_target.json"
+METRICS_BEACON_LOCAL = "/tmp/aerovla_metrics.json"
+METRICS_BEACON_REMOTE = "/tmp/aerovla_metrics.json"
 MANUAL_FLAG_LOCAL = "/tmp/aerovla_manual"
 H100 = "main.copper.sanati-emp.coder"
 
@@ -159,6 +165,32 @@ def load_target():
     return None
 
 
+def load_metrics():
+    """Read the live per-mission metrics beacon (local file, else ssh H100).
+
+    Mirrors load_target() but for METRICS_BEACON_LOCAL. Returned as a dict or
+    None. This runs on a worker thread (never the tkinter main thread) via the
+    same queue mechanism as load_target().
+    """
+    if os.path.exists(METRICS_BEACON_LOCAL):
+        try:
+            with open(METRICS_BEACON_LOCAL) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    try:
+        out = __import__("subprocess").run(
+            ["ssh", "-o", "ConnectTimeout=6", "-o", "LogLevel=ERROR", H100,
+             f"cat {METRICS_BEACON_REMOTE} 2>/dev/null"],
+            capture_output=True, text=True, timeout=12,
+        ).stdout
+        if out:
+            return json.loads(out)
+    except Exception:
+        return None
+    return None
+
+
 class MissionViewer:
     def __init__(self, port=30001):
         import tkinter as tk
@@ -172,6 +204,9 @@ class MissionViewer:
         self.target = None
         self._target_q = queue.Queue()
         self._fetching = False
+        self.metrics = None
+        self._metrics_q = queue.Queue()
+        self._fetching_metrics = False
         self.client = airsim.MultirotorClient(ip="127.0.0.1", port=port, timeout_value=10)
         self.client.confirmConnection()
         self.pool = WorkerPool(port)
@@ -270,6 +305,30 @@ class MissionViewer:
         if t:
             self._target_q.put(t)
 
+    # Metrics beacon: same pattern as target — poll on a worker thread so the
+    # (potentially slow, ~6s) ssh fallback never blocks the tkinter main thread.
+    def _pump_metrics(self):
+        if not getattr(self, "_fetching_metrics", False):
+            self._fetching_metrics = True
+            threading.Thread(target=self._poll_metrics, daemon=True).start()
+        self.root.after(2000, self._pump_metrics)
+
+    def _poll_metrics(self):
+        try:
+            m = load_metrics()
+        finally:
+            self._fetching_metrics = False
+        if m:
+            self._metrics_q.put(m)
+
+    def _drain_metrics(self):
+        while True:
+            try:
+                m = self._metrics_q.get_nowait()
+            except Exception:
+                break
+            self.metrics = m
+
     def _drain_target(self):
         while True:
             try:
@@ -307,6 +366,7 @@ class MissionViewer:
     def _schedule(self):
         try:
             self._drain_target()
+            self._drain_metrics()
             if self.manual:
                 self._apply_manual()
             self._frame()
@@ -367,11 +427,23 @@ class MissionViewer:
             p = s.position
             v = s.linear_velocity
             sp = math.sqrt(v.x_val ** 2 + v.y_val ** 2 + v.z_val ** 2)
+            m = self.metrics or {}
+            ms = "metrics: n/a"
+            if m:
+                col = m.get("collision", [])
+                term = m.get("term", [])
+                t0 = col[0] if col else 0
+                tt = term[0] if term else None
+                ms = (f"metrics: step={m.get('step', 0)}  "
+                      f"elapsed={m.get('time_s', 0):.1f}s  "
+                      f"collisions={t0}  "
+                      f"term={tt or '-'}")
             self.tel_lbl.configure(
                 text=(f"pos x={p.x_val:8.2f}  y={p.y_val:8.2f}  z={p.z_val:8.2f}  "
                       f"speed={sp:5.2f} m/s   mode={self.manual and 'MANUAL' or 'AUTO'}   "
                       f"paused={self._is_paused()}   "
                       f"keys: {self._keys_str()}\n"
+                      f"{ms}\n"
                       f"M: toggle AUTO/MANUAL   W/A/S/D move  R/F up/down  Q/E yaw  "
                       f"+/- speed  P pause  Esc exit")
             )
@@ -459,6 +531,7 @@ class MissionViewer:
     # -- startup / shutdown --
     def _start(self):
         self._pump_target()
+        self._pump_metrics()
         self._schedule()
 
     def _quit(self):

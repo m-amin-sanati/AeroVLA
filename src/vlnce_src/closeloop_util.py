@@ -135,6 +135,13 @@ class EvalBatchState:
         self.model_stops = [False] * batch_size
         self._write_target_beacon(env_batchs)
 
+        self.mission_start = time.time()
+        self.step_count = 0
+        self.collision_count = [0] * batch_size
+        self._prev_collisions = [False] * batch_size
+        self.term_classes = [None] * batch_size
+        self._write_metrics_beacon(force=True)
+
         self.stuck_counters = [0] * batch_size
         self.last_positions_check = [None] * batch_size
         
@@ -170,6 +177,33 @@ class EvalBatchState:
         except Exception as e:
             print(f"[beacon] target write failed: {type(e).__name__}: {e}", flush=True)
 
+    def _write_metrics_beacon(self, force=False):
+        """Write live per-mission metrics for the local mission console (Option A).
+
+        Called every 10 eval steps (and on mission start/termination). Writes
+        /tmp/aerovla_metrics.json on the H100; the local viewer polls it (directly
+        or via split.sh forwarding) to render elapsed time, step count, collision
+        count and termination class while the mission runs. Fields:
+          step      - current per-mission step count
+          time_s    - wall-clock seconds since mission start
+          collision - per-batch collision counters
+          term      - per-batch termination class (None until done)
+        """
+        try:
+            if not force and (self.step_count % 10) != 0:
+                return
+            beacon = {
+                'step': self.step_count,
+                'time_s': round(time.time() - self.mission_start, 2),
+                'collision': list(self.collision_count),
+                'term': list(self.term_classes),
+                'at': time.time(),
+            }
+            with open('/tmp/aerovla_metrics.json', 'w') as f:
+                json.dump(beacon, f)
+        except Exception as e:
+            print(f"[beacon] metrics write failed: {type(e).__name__}: {e}", flush=True)
+
     def _initialize_batch_data(self):
         outputs = self.eval_env.reset()
         observations, self.dones, self.collisions, self.oracle_success = [list(x) for x in zip(*outputs)]
@@ -186,7 +220,12 @@ class EvalBatchState:
     def update_from_env_output(self, outputs):
         observations, self.dones, self.collisions, self.oracle_success = [list(x) for x in zip(*outputs)]
         self.collisions, self.dones = self.assist.check_collision_by_depth(self.episodes, observations, self.collisions, self.dones)
-        
+        self.step_count += 1
+        for i in range(self.batch_size):
+            if self.collisions[i] and not self._prev_collisions[i]:
+                self.collision_count[i] += 1
+            self._prev_collisions[i] = bool(self.collisions[i])
+
         STUCK_THRESHOLD = 15
         STUCK_DIST = 0.05    
 
@@ -251,20 +290,27 @@ class EvalBatchState:
                 if self.success[i]:
                     print("✅ Success!")
                     prex = 'success_'
+                    self.term_classes[i] = 'success'
                 elif self.oracle_success[i]:
                     print("🏆 Oracle Success!")
                     prex = "oracle_"
+                    self.term_classes[i] = 'oracle'
                 elif self.collisions[i]:
                     print("💥 Collision (Crashed)")
+                    self.term_classes[i] = 'collision'
                 elif self.early_end[i]:
                     print("🛑 Early End (Too far from target)")
+                    self.term_classes[i] = 'early_end'
                 elif t == args.maxWaypoints:
                     print("⏳ Timeout (Max Steps Reached)")
+                    self.term_classes[i] = 'timeout'
 
                 new_traj_name = prex +  self.ori_data_dirs[i].split('/')[-1]
                 new_traj_dir = os.path.join(args.eval_save_path, new_traj_name)
                 save_to_dataset_eval(self.episodes[i], new_traj_dir, self.ori_data_dirs[i])
                 self.skips[i] = True
+
+        self._write_metrics_beacon(force=True)
                 
         return np.array(self.skips).all()
 
