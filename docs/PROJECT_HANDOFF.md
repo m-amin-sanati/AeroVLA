@@ -860,3 +860,39 @@ Mechanism of NaN entry: conv_stack BN has weight/bias ~8e35; with a non-zero BEV
 3. Flip `require_lidar=True`; finetune on H100 from `checkpoints/aerial_vla`:
    `--data_root envs/lidar_capture --split_json data/aerovla_train_dataset_fog_lidar.json`.
 4. Analyze `attn_stats` (mean mass ≫ 1/64 ⇒ lidar used) + `lidar_ablation()` deltas.
+
+## §14g (2026-09-19) Root-caused + FIXED the intermittent step-10 training crash
+
+### Problem
+Full 655-step finetune runs (`--epochs 5`, `steps_per_epoch = len(loader)//grad_accum`,
+`drop_last=True`) crashed at `step=10/655 loss=12.1501` with
+`RuntimeError: one of the variables needed for gradient computation has been modified by an
+inplace operation: [CUDABFloat16Type [64]]` (`AsStridedBackward0`, later `--anomaly` →
+`MaximumBackward0`). Reproduced 4× (same loss+error) across GC on/off, `--warmup_ratio 0.0`,
+`use_reentrant=False`. All short runs (13/16 steps) passed → intermittent, input-dependent.
+
+### Root cause (confirmed by `--anomaly`, `/tmp/train_anom2.log` on H100)
+`models/encoders/lidar_encoder.py` used an **in-place Python loop** for scatter-max:
+`bev[b, row, col] = torch.max(bev[b, row, col], feats[i])` (PointPillars `_voxelize`) and the
+same for `grid` (VoxelNet `_bin`). When ≥2 points of a random batch land in the **same BEV/voxel
+cell**, the saved max-backward view (size `[feature_dim]=[64]`) gets **overwritten in-place** →
+autograd version bump → crash. Batch-dependent collisions ⇒ intermittent.
+
+### Fix (applied + verified locally on CPU)
+- Replaced both scatter-max sites with fully-differentiable **`torch.scatter_reduce(..., reduce="amax",
+  include_self=True)`**, built via **fresh per-batch row tensors + `torch.stack`** (no shared mutable
+  buffer, no in-place `copy_`): PP `_voxelize` `models/encoders/lidar_encoder.py:103-120`, VN `_bin`
+  `models/encoders/lidar_encoder.py:196-209`.
+- Two gotchas hit during the rewrite: (1) `scatter_reduce_` (in-place `_`) also bumps the graph
+  version across batch iterations → must use out-of-place `torch.scatter_reduce`; (2) index dims must
+  match self dims (2D `[HW,C]` row + `[K,C]` index, `dim=0`). Dead `mask`/`ones_feat` vars removed.
+- Local verification (`aero_vla` venv): PP `[2,4096,64]` + VN `[2,1024,32]` forward finite, param-grad
+  finite; **semantic equivalence vs old loop = exact (maxdiff 0.0)** on a collision-rich batch.
+
+### State
+Fix verified locally. **NOT committed/pushed/H100-synced yet.** Full study run still blocked on
+propagation. Next: commit `models/encoders/lidar_encoder.py` alone → push `fork` → H100
+`git reset --hard fork/main` → rerun the exact failing config (total=655) ≥20 steps to confirm step 10
+passes → launch full `run_train_lidar.sh` (5 epochs) → monitor `attn mean_lidar_mass` vs
+`1/4096 ≈ 0.000244` baseline → `lidar_ablation()`.
+

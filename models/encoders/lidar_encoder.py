@@ -94,33 +94,27 @@ class PointPillarsEncoder(nn.Module):
         valid_xy = (ix >= 0) & (ix < W) & (iy >= 0) & (iy < H)
         keep = keep & valid_xy
 
-        # Max-pool top-K points per voxel (bounded).
-        # We do a simple, memory-light approximation: only keep the max-N points
-        # per voxel via a per-voxel sort is expensive; instead we just mask.
         point_feats = self.pillar_mlp(points)  # [B, N, feature_dim]
         point_feats = point_feats * keep.unsqueeze(-1)
 
         # Scatter-max into BEV grid (B, H, W).
         bev = torch.zeros(B, H, W, point_feats.shape[-1], dtype=point_feats.dtype, device=device)
-        # Use a flattened index to do scatter_add on the max (approximate);
-        # accumulate via max by iterating 2D bins.
-        mask = keep.unsqueeze(-1)  # [B, N, 1]
-        ones_feat = torch.ones_like(point_feats) * mask
-        # We'll scatter-add features where a count <= 1 per voxel assumption is fine
-        # for smoke tests; this is a research sketch, not a full PointPillars impl.
+        # Scatter-max into BEV grid (B, H, W).
+        bev = torch.zeros(B, H * W, point_feats.shape[-1],
+                          dtype=point_feats.dtype, device=device)
+        flat_idx = (ix * W + iy).long().masked_fill(~valid_xy, 0)    # [B, N]
+        rows = []
         for b in range(B):
-            nb = keep[b].nonzero(as_tuple=False)
-            if nb.numel() == 0:
-                continue
-            idx_b = nb  # [K, 1]
-            k = idx_b.shape[0]
-            rows = ix[b].index_select(0, idx_b[:, 0])
-            cols = iy[b].index_select(0, idx_b[:, 0])
-            feats = point_feats[b].index_select(0, idx_b[:, 0])  # [K, feature_dim]
-            for i in range(k):
-                bev[b, rows[i].item(), cols[i].item()] = torch.max(
-                    bev[b, rows[i].item(), cols[i].item()], feats[i]
+            row = bev[b]
+            if keep[b].any():
+                idx = flat_idx[b][keep[b]]                           # [K]
+                src = point_feats[b][keep[b]]                        # [K, C]
+                row = torch.scatter_reduce(
+                    row, 0, idx.unsqueeze(1).expand(-1, src.shape[-1]), src,
+                    reduce="amax", include_self=True,
                 )
+            rows.append(row)
+        bev = torch.stack(rows, dim=0).reshape(B, H, W, point_feats.shape[-1])
         return bev.permute(0, 3, 1, 2)  # [B, feature_dim, H, W]
 
     def forward(self, points: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
@@ -200,20 +194,21 @@ class VoxelNetEncoder(nn.Module):
         keep = valid & inb
 
         point_feats = self.point_mlp(points) * keep.unsqueeze(-1)
-        grid = torch.zeros(B, D, H, W, self.feature_dim, dtype=point_feats.dtype, device=points.device)
+        flat = torch.zeros(B, D * H * W, self.feature_dim,
+                           dtype=point_feats.dtype, device=points.device)
+        flat_idx = ((iz * H + iy) * W + ix).long().masked_fill(~keep, 0)  # [B, N]
+        rows = []
         for b in range(B):
-            nb = keep[b].nonzero(as_tuple=False)
-            if nb.numel() == 0:
-                continue
-            k = nb.shape[0]
-            rows = ix[b].index_select(0, nb[:, 0])
-            cols = iy[b].index_select(0, nb[:, 0])
-            deps = iz[b].index_select(0, nb[:, 0])
-            feats = point_feats[b].index_select(0, nb[:, 0])
-            for i in range(k):
-                grid[b, deps[i].item(), rows[i].item(), cols[i].item()] = torch.max(
-                    grid[b, deps[i].item(), rows[i].item(), cols[i].item()], feats[i]
+            row = flat[b]
+            if keep[b].any():
+                idx = flat_idx[b][keep[b]]              # [K]
+                src = point_feats[b][keep[b]]           # [K, C]
+                row = torch.scatter_reduce(
+                    row, 0, idx.unsqueeze(1).expand(-1, src.shape[-1]), src,
+                    reduce="amax", include_self=True,
                 )
+            rows.append(row)
+        grid = torch.stack(rows, dim=0).reshape(B, D, H, W, self.feature_dim)
         return grid  # [B, D, H, W, C]
 
     def forward(self, points: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:

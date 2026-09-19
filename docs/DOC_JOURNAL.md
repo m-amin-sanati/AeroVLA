@@ -2080,3 +2080,54 @@ Total 1053 samples fully resolvable. Local UE4 dies sporadically mid-capture (~1
 **Next**: flip `require_lidar=True` in `src/train_step_a.py:213`; finetune on H100 from
 `checkpoints/aerial_vla` (`--data_root envs/lidar_capture --split_json data/aerovla_train_dataset_fog_lidar.json`);
 analyze `attn_stats` vs 1/64 baseline + `lidar_ablation()` deltas; update docs.
+
+## SESSION 2026-09-19 (cont.) — root-caused + FIXED the intermittent training crash
+## (in-place scatter-max in `lidar_encoder.py`)
+
+**Goal**: fix the recurring step-10 crash of the foggy-lidar finetune, unblock the full 5-epoch study run.
+
+**Problem**: Full 655-step runs (`--epochs 5`, steps_per_epoch 131 = `len(loader)//grad_accum`,
+`drop_last=True`) crashed at `step=10/655 loss=12.1501` with
+`RuntimeError: one of the variables needed for gradient computation has been modified by an inplace
+operation: [CUDABFloat16Type [64]]` from `AsStridedBackward0` (later `--anomaly` named
+`MaximumBackward0`). Reproduced 4× with identical loss+error. All short runs (13/16 steps) passed →
+intermittent, input-dependent. GC on/off, `--warmup_ratio 0.0`, `use_reentrant=False` — none fixed it.
+
+**Root cause (confirmed)**:
+- `models/encoders/lidar_encoder.py` `PointPillarsEncoder._voxelize` used an **in-place Python loop**:
+  `bev[b, rows, cols] = torch.max(bev[b, rows, cols], feats[i])`.
+- Whenever ≥2 valid points of a random batch landed in the **same BEV cell**, the saved
+  max-backward view (size `[feature_dim]=[64]`) was **overwritten in-place** → autograd version
+  bump (7 vs 6) → the crash. Same pattern in `VoxelNetEncoder._bin` (`grid[..., d, r, c] = torch.max(...)`).
+- Batch-dependent collision count ⇒ intermittent, always-different step-10 trigger in a 655-run.
+
+**Solution (applied, verified)**:
+- Rewrote both scatter-max sites as a fully-differentiable **`torch.scatter_reduce(..., reduce="amax",
+  include_self=True)`** built with **fresh per-batch row tensors + `torch.stack`** (no shared mutable
+  buffer, no in-place `copy_`):
+  - PP `_voxelize` `models/encoders/lidar_encoder.py:103-120` (was ~line 104-122 loop).
+  - VN `_bin` `models/encoders/lidar_encoder.py:196-209`.
+- **2 gotchas hit during the rewrite** (both fixed):
+  1. `scatter_reduce_` (in-place `_`) ALSO bumps the graph version when reused across batch
+     iterations → must use the out-of-place `torch.scatter_reduce` returning a fresh tensor.
+  2. `torch.scatter_reduce` on a batch tensor `[B, HW, C]` requires index dims == self dims;
+     the first 3D attempt failed (`Index tensor must have the same number of dimensions as self`).
+     Final shape: 2D row `[HW, C]` + index `[K, C]`, `dim=0`, `black` amax-merge; `torch.stack` rows.
+- Local CPU verification (`aero_vla` venv, `/media/sanati/DriveE/miniconda3/envs/aero_vla/bin/python`):
+  - PP `[2,4096,64]` + VN `[2,1024,32]` forward finite, `wgrad` finite (through `pillar_mlp`/`point_mlp`).
+  - **Semantic equivalence vs the old in-place max-loop: exact (maxdiff 0.0)** on a collision-rich
+    batch (points in `[0,20]² × z∈[-1.5,1.0]`, 200 pts into a 64-cell grid → 167 kept, cells overwritten).
+  - Removed the now-dead `mask`/`ones_feat` lines in `_voxelize`.
+
+**Current state**: fix verified locally (equivalent + differentiable). NOT yet committed/pushed/H100-synced.
+The full study run on H100 is still blocked until the fix is propagated.
+
+**Next**: document (this entry) → stage only `models/encoders/lidar_encoder.py` → commit → push `fork`
+(do NOT stage `airsim_plugin/settings/30001/settings.json`; leave `airsim_plugin/settings/31001/` untracked)
+→ H100 `git fetch fork && git reset --hard fork/main` → local + H100 syntax check → H100 rerun the exact
+failing config (`total=655`, `--no_gc`, `--capture_attn`, exclude prior test ckpts) for ≥15-20 steps to
+confirm step 10 passes → launch full `run_train_lidar.sh` (5 epochs) → monitor `attn mean_lidar_mass` vs
+`1/4096 ≈ 0.000244` baseline → after training run `lidar_ablation()` → update docs.
+
+---
+

@@ -76,6 +76,16 @@ def parse_args():
     p.add_argument("--start_ckpt", default=None,
                    help="Optional existing LoRA adapter (e.g. checkpoints/aerial_vla) "
                         "to warm-start the LoRA before training.")
+    p.add_argument("--capture_attn", action="store_true",
+                   help="Enable lidar-usage instrumentation on the fusion cross-attn "
+                        "(records attn_stats each forward; logged with logging_steps).")
+    p.add_argument("--anomaly", action="store_true",
+                   help="Enable torch.autograd.set_detect_anomaly(True) to pinpoint "
+                        "in-place/other gradient errors with op+layer info.")
+    p.add_argument("--no_gc", action="store_true",
+                   help="Disable gradient checkpointing entirely (deterministic; "
+                        "more VRAM). Avoids the intermittent GC-recompute vs "
+                        "PEFT-LoRA in-place race.")
     p.add_argument("--micro_batch", type=int, default=2)
     p.add_argument("--grad_accum", type=int, default=8)
     p.add_argument("--lr", type=float, default=2e-4)
@@ -188,15 +198,24 @@ def main():
     # params. Restore a deterministic init immediately after load.
     if not args.no_lidar:
         peft_raw.fusion_module.reset_fusion_parameters()
+        if args.capture_attn:
+            peft_raw.fusion_module.fusion.capture_attn = True
+            print("[stepA] attn capture ENABLED (attn_stats recorded per forward)")
 
     # Gradient checkpointing (matches `src/train_aerovla.py`); enables 7B+fusion
     # on a single H100 MIG.  Runs below the PEFT wrapper so it applies to the
-    # actual language_model/lm_head.
-    if torch.cuda.is_available():
+    # actual language_model/lm_head.  `--no_gc` disables it entirely: the
+    # intermittent GC-recompute vs PEFT-LoRA in-place race disappears, at the
+    # cost of higher VRAM (micro_batch=1 on MIG 80G usually still fits).
+    if torch.cuda.is_available() and not args.no_gc:
         try:
-            peft_raw.gradient_checkpointing_enable()
+            peft_raw.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
         except Exception as e:  # noqa: BLE001
             print(f"[stepA] gradient checkpointing skipped: {e}")
+    if args.no_gc:
+        print("[stepA] gradient checkpointing DISABLED (--no_gc)")
 
     # Explicitly unfreeze the fusion modules (cem/lidar_encoder/fusion cross-attn).
     # These live on the ORIGINAL (peft_raw.fusion_module) and are what
@@ -281,6 +300,9 @@ def main():
     running_loss = 0.0
     t0 = time.time()
     model.train()
+    if args.anomaly:
+        torch.autograd.set_detect_anomaly(True)
+        print("[stepA] autograd anomaly detection ON (slower, for debugging)")
     print("[stepA] beginning training ...")
 
     for epoch in range(args.epochs):
@@ -337,6 +359,14 @@ def main():
                       f"loss={running_loss/args.logging_steps:.4f} "
                       f"lr={scheduler.get_last_lr()[0]:.2e} "
                       f"elapsed={time.time()-t0:.1f}s")
+                if args.capture_attn and not args.no_lidar:
+                    st = peft_raw.fusion_module.fusion.attn_stats
+                    if st is not None:
+                        # baseline = uniform over N_lidar keys -> mean mass 1/N_k
+                        print(f"[stepA] attn mean_lidar_mass={st['mean_lidar_mass']:.4f} "
+                              f"max_key_focus={st['max_key_focus']:.4f} "
+                              f"entropy={st['mean_entropy']:.4f}")
+                        peft_raw.fusion_module.fusion.attn_stats = None
                 running_loss = 0.0
 
             if (global_step + 1) % args.save_steps == 0:
