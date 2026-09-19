@@ -311,11 +311,13 @@ class UAVLiDARDataset(Dataset):
         pc = lidar["point_cloud"]  # flat [N*3]? or [N,3]
         pc = np.asarray(pc, dtype=np.float64).reshape(-1, 3)
         seg = lidar.get("segmentation")
-        if isinstance(seg, list) and len(seg):
+        if isinstance(seg, list) and len(seg) > 0 and len(seg) == pc.shape[0]:
             seg = np.asarray(seg, dtype=np.float64).reshape(-1)
             # intensity placeholder: use segmentation class where available
             intensity = seg
         else:
+            # AirSim may return segmentation shorter than the point cloud
+            # (not one-per-point) -> pad with zeros rather than misalign.
             intensity = np.zeros(pc.shape[0], dtype=np.float64)
         # airsim returns point_cloud as flat [x0,y0,z0, x1,y1,z1, ...]
         if pc.shape[1] == 1:
