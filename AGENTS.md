@@ -231,6 +231,18 @@ When something becomes deprecated or is replaced:
   immediately after `get_peft_model` in every script that loads the fused model.**
   (`models/aerial_vla_model.py`; standalone BN/Conv on all-zero input are clean, so
   the load path is the only trigger.) H100 smoke now passes: loss=10.77→14.69 finite.
+- **Foggy-LiDAR lidar-usage study (since 2026-09-15, PAUSED)**: goal = prove the fusion uses
+  lidar + how much. Capture foggy lidar training logs via H100 `scripts/replay_capture_lidar.py`
+  through the reverse tunnel (local UE4, NOT a model eval; env vars `RP_PORT/RP_MAP/RP_JSON_LIST/
+  RP_OUT/RP_MAX_EPS/RP_MAX_FRAMES/RP_FOG/RP_DATA_ROOT`; `getImageResponses` 8×2s retry; run
+  `python -u`, log file). 4 eps validated at `envs/lidar_capture/BrushifyForestPack/` (fog=1.0,
+  real lidar ~40-49k pts/frame, format matches `UAVLiDARDataset`). Instrumentation added to
+  `models/fusion/cross_attention_fusion.py`: `capture_attn` kwarg + `attn_stats` buffer +
+  `@torch.no_grad()` `lidar_ablation()` (NOT committed). **H100 disk freed 80G→27G; `checkpoints/
+  aero_vla_step_a` DELETED → finetunes start from `checkpoints/aerial_vla` (442M, run_eval default).**
+  `src/train_step_a.py:213` still `require_lidar=False` (flip before finetune). Split
+  `data/aerovla_train_dataset_fog_lidar.json` (1053 samples/20 eps) resolves via `--data_root
+  ./envs/lidar_capture`. See docs §14f + DOC_JOURNAL 2026-09-15.
 
 ---
 

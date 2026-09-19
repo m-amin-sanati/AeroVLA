@@ -73,6 +73,9 @@ def parse_args():
     p.add_argument("--data_root", default="./dataset_raw")
     p.add_argument("--split_json", default="./data/aerovla_train_dataset.json")
     p.add_argument("--output_dir", default="./checkpoints/aero_vla_step_a")
+    p.add_argument("--start_ckpt", default=None,
+                   help="Optional existing LoRA adapter (e.g. checkpoints/aerial_vla) "
+                        "to warm-start the LoRA before training.")
     p.add_argument("--micro_batch", type=int, default=2)
     p.add_argument("--grad_accum", type=int, default=8)
     p.add_argument("--lr", type=float, default=2e-4)
@@ -164,6 +167,21 @@ def main():
     model = get_peft_model(model, lora_config)
     peft_raw = model.base_model.model          # original PrismaticForConditionalGeneration
 
+    # Optional warm-start: load an existing AeroVLA LoRA + projector adapter
+    # (e.g. checkpoints/aerial_vla) so training continues from the prior policy
+    # instead of a blank LoRA. Lightweight; ignored if dir missing.
+    if args.start_ckpt:
+        from peft import PeftModel
+        if os.path.isdir(args.start_ckpt):
+            try:
+                model.load_adapter(args.start_ckpt, adapter_name="start")
+                model.set_adapter("start")
+                print(f"[stepA] loaded start LoRA adapter from {args.start_ckpt}")
+            except Exception as _e:  # noqa: BLE001
+                print(f"[stepA] start_ckpt load failed ({_e}); continuing fresh")
+        else:
+            print(f"[stepA] start_ckpt {args.start_ckpt} not a dir; continuing fresh")
+
     # The fresh fusion stack (cem/lidar_encoder/fusion) is discarded by HF's
     # loader (`low_cpu_mem_usage` + `device_map` move to meta, then only
     # checkpoint keys materialize) and comes back uninitialized -> NaN/garbage
@@ -210,7 +228,7 @@ def main():
         num_depth_samples=args.cem_num_depth_samples,
         grid_res=tuple(args.lidar_grid_res),
         lidar_sensor_key="lidar",
-        require_lidar=False,
+        require_lidar=True,
         tokenizer=tokenizer,
         device=device,
         dtype=torch_dtype,

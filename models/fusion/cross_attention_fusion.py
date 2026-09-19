@@ -32,6 +32,7 @@ class SoftLiDARVisualCrossAttention(nn.Module):
         dropout: float = 0.1,
         use_smca_mask: bool = False,
         smca_sigma: float = 10.0,
+        capture_attn: bool = False,
     ) -> None:
         """Args:
             d_model: token width (D_vis); must equal CEM output + projector input.
@@ -39,6 +40,9 @@ class SoftLiDARVisualCrossAttention(nn.Module):
             dropout: attention/output dropout.
             use_smca_mask: toggle the 2D distance mask (SMCA-style).
             smca_sigma: Gaussian sigma controlling spatial locality of the mask.
+            capture_attn: if True, record attention statistics (mass on lidar
+                keys, per-head focus) into self.attn_stats each forward for
+                lidar-usage analysis (off by default; no semantic change).
         """
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
@@ -49,6 +53,8 @@ class SoftLiDARVisualCrossAttention(nn.Module):
         self.use_smca_mask = use_smca_mask
         self.smca_sigma = smca_sigma
         self.scale = math.sqrt(self.head_dim)
+        self.capture_attn = capture_attn
+        self.attn_stats = None
 
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
@@ -143,6 +149,22 @@ class SoftLiDARVisualCrossAttention(nn.Module):
         attn = torch.softmax(attn_logits, dim=-1)
         attn = self.attn_drop(attn)
 
+        # Optional instrumentation: record lidar-usage statistics (no-op unless
+        # capture_attn=True). mean_key = mean attention mass on lidar keys
+        # (baseline 1/N_k when unused); focus = fraction of max-attended key.
+        if self.capture_attn:
+            with torch.no_grad():
+                attn_nodrop = torch.softmax(attn_logits, dim=-1)
+                self.attn_stats = {
+                    # per-head mean attention mass on lidar keys (mean over
+                    # batch + query tokens): baseline 1/N_k when lidar unused.
+                    "per_head_mean_mass": attn_nodrop.mean(dim=(0, 2)).tolist(),
+                    "mean_lidar_mass": attn_nodrop.mean(dim=(0, 2)).mean().item(),
+                    "max_key_focus": attn_nodrop.max(dim=-1).values.mean().item(),
+                    "mean_entropy": -(attn_nodrop * torch.log(attn_nodrop.clamp_min(1e-9)))
+                    .sum(dim=-1).mean().item(),
+                }
+
         out = torch.matmul(attn, v)                        # [B, h, Nq, head_dim]
         out = out.transpose(1, 2).contiguous().view(B, N_vis, self.d_model)
         out = self.out_proj(out)
@@ -150,3 +172,32 @@ class SoftLiDARVisualCrossAttention(nn.Module):
 
         # Residual + LayerNorm.
         return self.norm(out + vis_tokens)
+
+    @torch.no_grad()
+    def lidar_ablation(self, vis_tokens, lidar_tokens, pe_vis, pe_lidar,
+                       q_pix=None, k_pix=None, key_padding_mask=None):
+        """Quantify lidar influence: fused output with and without lidar content.
+
+        Runs the fusion twice (once with `lidar_tokens`/`pe_lidar` zeroed) and
+        reports the per-token RMS / cosine difference, i.e. how much of the
+        fused visual representation actually depends on LiDAR. Returns a dict:
+            rms_delta, rel_rms_delta, cos_sim, frac_changed
+        """
+        fused_full = self(vis_tokens, lidar_tokens, pe_vis, pe_lidar,
+                          q_pix=q_pix, k_pix=k_pix,
+                          key_padding_mask=key_padding_mask)
+        zero_l = torch.zeros_like(lidar_tokens)
+        zero_p = torch.zeros_like(pe_lidar)
+        fused_zero = self(vis_tokens, zero_l, pe_vis, zero_p,
+                          q_pix=q_pix, k_pix=k_pix,
+                          key_padding_mask=key_padding_mask)
+        diff = (fused_full - fused_zero).norm(dim=-1)  # [B, N_vis]
+        base = fused_full.norm(dim=-1).clamp_min(1e-6)
+        return {
+            "rms_delta": diff.mean().item(),
+            "rel_rms_delta": (diff / base).mean().item(),
+            "cos_sim": F.cosine_similarity(
+                fused_full.flatten(0, 1), fused_zero.flatten(0, 1), dim=-1
+            ).mean().item(),
+            "frac_changed": (diff > 1e-4).float().mean().item(),
+        }

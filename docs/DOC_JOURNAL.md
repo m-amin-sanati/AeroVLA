@@ -1868,3 +1868,215 @@ fog=1.0 + 10 m AGL alt-cap + **lidar** capture, using **AeroVLA's own pretrained
 ### Next steps
 - Let run finish (multi-hour). If aborted: `kill $(cat /tmp/aerovla_split_30000.pid)` locally tears all.
 - Post-run: rebuild `merged_data.json` + split; Option A with `require_lidar=True`; then Option B.
+
+## Session 2026-09-14 (cont.) — Mission metrics beacon + 5 m alt cap + H100 outage diagnosis
+
+### Goal
+Continue the split BrushifyForestPack re-capture (fog 1.0, now **5 m AGL cap**), deliver live
+mission metrics to the mission console, then monitor the restarted eval.
+
+### What I did
+1. **Metrics beacon** (commit `ca5c8c1`, pushed to fork, H100 synced):
+   - `scripts/run_eval.sh`: `ENV_MAX_ALT_AGL` default **10 → 5** (user: "limit max alt to 5 meter").
+   - `src/vlnce_src/closeloop_util.py`: `EvalBatchState` gains `mission_start`, `step_count`,
+     `collision_count` (False→True transitions only), `_prev_collisions`, `term_classes`;
+     `_write_metrics_beacon(force=False)` writes `/tmp/aerovla_metrics.json`
+     `{step, time_s, collision:[...], term:[...], at}` every 10 eval steps + mission start +
+     termination; `check_batch_termination` sets term class
+     ('success'/'oracle'/'collision'/'early_end'/'timeout') + final forced beacon.
+   - `src/vlnce_src/eval_aerovla.py`: calls `_write_metrics_beacon()` after `update_metric()`.
+   - `scripts/mission_viewer.py`: `METRICS_BEACON_LOCAL/REMOTE`, `load_metrics()`,
+     `_pump_metrics`/`_poll_metrics`/`_drain_metrics`, wired into `_start()`+`_schedule()`;
+     telemetry renders `metrics: step=… elapsed=…s collisions=… term=…`. Local-File-first,
+     ssh-fallback pattern (same as target beacon), worker thread + queue (never tkinter main thread).
+   - `py_compile` OK on all touched files.
+2. **Eval restart**: H100 synced `git reset --hard fork/main`; old run torn down (it had errored
+   `ERROR - _worker_env:184/186 - command is: get_obs_at` at 07:25:31 anyway); new run relaunched
+   `AEROVLA_MAP=BrushifyForestPack AEROVLA_ENV_FOG=1.0 nohup bash scripts/run_eval.sh 30000 /tmp/split_eval.log`
+   → pid 442730 (launcher 442380). Verified live: cmdline `--max_alt_agl 5`; beacon
+   `{"step":13,"time_s":58.38,"collision":[0],"term":[null]}`; stepping 5→13, Completed 2/433.
+   (New run total **433** episodes, not 444.)
+3. **Viewer restart (root cause found)**: running viewer (pid 75690) STARTED 10:19:38 but
+   `mission_viewer.py` was edited 10:50:53 → old code, no metrics panel. Killed + relaunched
+   (new pid 149628, `:1`, window moved to `+1970+87`). Verified via screenshot analysis
+   (PIL, no OCR): FRONT std=53/1530 uniq, BOTTOM std=82/1046, LIDAR std=49/1639 → **all live**,
+   not placeholders.
+4. **H100 outage diagnosed**: 10 min later the FRONT view froze (frame-to-frame mean abs diff
+   0.0 over 6 s) → eval dead. Empty `/tmp/aerovla_eval_30000.pid`, no ssh answer (5×30 s
+   attempts + background 8-min retry loop all fail). Local stack unaffected (split 43524,
+   tunnel 43577, server 43549, UE4 141791 all alive).
+
+### Problems faced & solutions
+- **Viewer had no metrics**: running viewer was on OLD code (started before edit). Fix: restart it.
+- **H100 ssh unreachable for 17+ min**: cannot read `/tmp/split_eval.log`, beacon, or restart eval.
+  Root cause likely the documented flaky `coder` ssh; also NOTE `split.sh` does **not** forward
+  beacon files over the tunnel (only ports 30000-30016), so while H100 is unreachable there is
+  no way to see eval progress. Tunnel only forwards AirSim ports.
+
+### Current state
+- Local stack UP; viewer (149628) rendering live views (screenshot `/tmp/mission_console_v2.png`).
+- H100 eval presumed DEAD (frozen front view, empty pidfile); H100 host unreachable via ssh.
+- No local copy of `/tmp/split_eval.log` → cannot confirm the death reason until ssh recovers.
+
+### Next steps
+- When ssh recovers: inspect `/tmp/split_eval.log` tail for the error; decide restart.
+- Consider adding beacon-file forwarding to `split.sh` (reverse tunnel `-R` over an `http`/file port
+  or a `-R` cat) so evals stay observable even when direct ssh to H100 is down.
+- After run completes: rebuild `merged_data.json` + split; Option A `require_lidar=True`; then Option B.
+
+### BLOCKER UPDATE (same session, ~15 min later)
+- **Root cause of H100 ssh failure**: NOT the eval/tunnel — it's the **coder control plane**.
+  `ssh main.copper.sanati-emp.coder 'echo UP'` with `LogLevel=ERROR` shows:
+  `error: Get "http://coder.sepidserve.local/api/v2/users/sanati-emp/workspace/copper?include_deleted=false": terminated signal received`
+  plus a `version mismatch: client v2.35.3, server v2.33.6` warning. The local `coder` client
+  cannot reach `coder.sepidserve.local` to resolve the `copper` workspace agent.
+- The **long-lived reverse tunnel (pid 43577, opened 09:57) still works** (established connection
+  survives) → the AirSim server/UE4 side is intact. But no NEW `coder ssh` command works until the
+  control plane recovers. This is **user dev-infra**, not a repo fix. Did NOT touch `/usr/bin/coder`
+  (root-owned, would break IDE ssh on other hosts).
+- Action taken: stopped the redundant background ssh-retry loop. Logged exact error for resumption.
+
+
+---
+
+## SESSION 2026-09-15 — Foggy-LiDAR lidar-usage study: capture + instrumentation (PAUSED per user)
+
+### Goal
+Prove whether the cross-attention LiDAR-visual fusion actually uses lidar, and how much:
+capture foggy-with-lidar training logs via a local UE4 sim replay pass (NOT a model eval),
+finetune on H100 with `require_lidar=True`, and instrument the cross-attention to measure
+lidar usage (attention mass + lidar→zero ablation). Scope = small slice (~10-20 episodes).
+User: "we dont want to run eval", "just add lidar to env and run finetune to capture the
+logs or attentions or any other way that finds out if lidar is used / how much weight".
+
+### What I did
+1. **Foggy lidar capture validated end-to-end** on H100 (server pid 35136 + tunnel 35200 to
+   local UE4, port 30001): 4 BrushifyForestPack episodes captured under `fog=1.0` with real
+   lidar (~40-49k pts/frame) in exactly the `log/<frame>.json` `sensors.lidar` format
+   `UAVLiDARDataset` expects (`point_cloud` flat list, `pose`, `segmentation`, `time_stamp`;
+   frame keys = `['frame','sensors']`, sensors = `['state','imu','lidar']`). Each episode =
+   10 camera subdirs (`frontcamera`,`downcamera`,`leftcamera`,`rearcamera`,`rightcamera` ×
+   RGB/depth) × 40 pngs + `log/` 40 jsons.
+2. **Freed H100 disk (was 100% full 80G/80G → 27G avail)** per user directive, deleting:
+   `/workspaces/AeroVLA/eval_results` (34G), `/workspaces/AeroVLA/evals.zip` (3.1G),
+   `/workspaces/AeroVLA/checkpoints/aero_vla_step_a` (2.2G). All confirmed gone. NOTE:
+   **`aero_vla_step_a` deleted — the active finetune checkpoint no longer exists**;
+   `checkpoints/aerial_vla` (442M) remains and is the default eval/start model
+   (`MODEL_PATH="${AEROVLA_MODEL_PATH:-./checkpoints/aerial_vla}"` in `scripts/run_eval.sh`).
+3. **Pre-deletion audit** (user-requested): `eval_results/checkpoints/seen_valset/
+   BrushifyForestPack` had 60 episodes → 20 plain (failed/short, 6-111 logjson), 16
+   `oracle_*`, 24 `success_*` (~20/60 failed).
+4. **Episode-4 failure root cause** (first capture): disk full + transient
+   `getImageResponses` RPC failure. Fixed by adding an **8-attempt retry wrapper (2s sleep)**
+   around `getImageResponses` in `scripts/replay_capture_lidar.py`; second run completed all
+   4 episodes cleanly (`[replay] FINISHED: 4 episodes captured under fog=1.0`).
+5. **H100 remote shell artifact**: piped stdout over ssh gets mangled. Workaround: scp a
+   remote python script to `/tmp`, run it redirecting to a file (`> out 2>&1; echo RC=$?`),
+   scp the file back to local, `cat` locally.
+6. **Built train split**: `build_training_split.py --eps_dir envs/data_raws/BrushifyForestPack
+   --out data/aerovla_train_dataset_fog_lidar.json --map BrushifyForestPack --min_frames 5
+   --skip_missing --max_eps 20` → **1053 samples / 20 episodes**; 2 skipped (no
+   `merged_data.json`). 18 episode UUIDs → `/workspaces/AeroVLA/data/uav_dataset/
+   fog_lidar_episodes.json`.
+7. **Dataset wiring**: split `traj_rel_dir = BrushifyForestPack/<uuid>` resolves against
+   `--data_root`; finetune uses `--data_root ./envs/lidar_capture` (foggy PNGs + lidar logs).
+   `src/train_step_a.py:213` hardcodes `require_lidar=False` → must become True.
+   `camera_calib.json` optional (falls back to synth 90° FOV K + default extrinsics).
+8. **Instrumented `SoftLiDARVisualCrossAttention`** (`models/fusion/cross_attention_fusion.py`):
+   added `capture_attn` flag (default False, no semantic change) + `attn_stats` buffer
+   recording per-forward: `per_head_mean_mass` (8 heads × N_k lidar-key attention mass, mean
+   over batch+queries; baseline 1/N_k when unused), `mean_lidar_mass`, `max_key_focus`,
+   `mean_entropy`; plus a standalone `@torch.no_grad()` method **`lidar_ablation()`** running
+   the fusion twice (with and without zeroed lidar tokens/PE) and reporting `rms_delta`,
+   `rel_rms_delta`, `cos_sim`, `frac_changed` (how much of the fused representation depends
+   on lidar). Verified locally (CPU): random-init gives exactly baseline 0.0156 = 1/64 mass
+   (uniform, expected pre-training). Two runtime bugs during dev — `.mean(dim=(0,1)).item()`
+   on [B,h,Nq] → `RuntimeError: 100 elements cannot be converted to Scalar`; fixed by
+   `.mean()` over all dims; per-head kept as [8,N_k] via `.mean(dim=(0,2))`.
+
+### Problems faced & solutions
+- **18-ep capture list format BUG**: `fog_lidar_episodes.json` written as a list of plain
+  path strings, but `replay_capture_lidar.py` expects entries as dicts `{"json":
+  "BrushifyForestPack/<uuid>/merged_data.json", "frame":1}` (per original split format).
+  Crashed immediately at line 117 (`TypeError: string indices must be integers`). **Fixed**:
+  regenerated from `data/aerovla_train_dataset_fog_lidar.json` (18 correct dict entries).
+- **Relaunched 18-ep capture (pid 962411)** after the format fix; verified it was running
+  (`[replay] capture ...` progressing). ~25 min estimated for 18 eps.
+
+### Current state (PAUSED — user said "stop the training" then chose "document, stay idle")
+- **H100 replay capture STOPPED by user** (pid 962411 was killed; `pgrep -af
+  replay_capture_lidar.py` → confirmed nothing running). Only the original **4-episode
+  foggy-lidar capture** exists for real at
+  `/workspaces/AeroVLA/envs/lidar_capture/BrushifyForestPack/{0081dd00-…,020454a6-…,
+  0243c326-…,033200b8-…}/` (each 10 cam dirs × 40 pngs + 40 log jsons with lidar).
+- Train split `data/aerovla_train_dataset_fog_lidar.json` (1053 samples) ready but the
+  18 capture dirs it references are NOT yet captured on H100 (only 4 of 18 done).
+- Attention instrumentation in `models/fusion/cross_attention_fusion.py` is DONE + locally
+  verified (CPU) but **not committed, not pushed, not propagated to H100**.
+- `src/train_step_a.py` still hardcodes `require_lidar=False` (line 213) — not yet flipped.
+- No finetune was run this session.
+
+### Next steps (when user resumes)
+1. Restart the 18-ep foggy lidar capture on H100 (`bash /workspaces/AeroVLA/launch_h100_replay18.sh`;
+   ~25 min), or re-scope to a smaller slice if preferred.
+2. Commit + push + propagate the fusion instrumentation (and `replay_capture_lidar.py`) to H100.
+3. Flip `require_lidar=True` in `src/train_step_a.py:213`; finetune on H100 with
+   `--data_root envs/lidar_capture --split_json data/aerovla_train_dataset_fog_lidar.json`,
+   starting from `checkpoints/aerial_vla` (since `aero_vla_step_a` is deleted).
+4. Analyze `attn_stats` (lidar mass vs 1/64 baseline) + `lidar_ablation()` deltas to quantify
+   lidar usage; update docs.
+
+---
+
+## SESSION 2026-09-19 (resume) — capture truncated-frames bug found & fixed
+
+**Goal**: finish foggy-lidar capture (18 eps) + finetune; prove lidar usage.
+
+**Problem**: The first 18-ep capture used `RP_MAX_FRAMES=40` (frames 0-39/ep), but the
+training split `data/aerovla_train_dataset_fog_lidar.json` references keyframe `index`
+values up to ~150-428 per episode. ALL 18 episodes had samples with `img_name` >= 40
+(≈77% of 1053 samples). The 40-frame capture would leave those PNGs/log-jsons missing →
+finetune would fail/silently drop most samples. (User caught this: "drone may be close to
+target in more frames".)
+
+**Solution (user approved "Re-capture keyframes only")**:
+- `scripts/replay_capture_lidar.py`: added keyframe mode — captures exactly each episode's
+  `index` list from `merged_data.json` (e.g. `0081dd00` = 53 keyframes, max=258) instead of
+  `frames[:max_frames]`. Falls back to max_frames if no `index`. `RP_ALL_FRAMES` env forces
+  full-trajectory mode. Loop now iterates real frame index values (writes `000005.json` etc.,
+  not `000000..000039`). Also clears (`shutil.rmtree`) any prior capture of that episode so
+  stale 0-39 frames can't mix with the new keyframe set.
+- New launcher `launch_h100_replay18_keyframes.sh` (RP_MAX_FRAMES=120 fallback, keyframe mode).
+- scp'd both to H100. Old `launch_h100_replay18.sh` + `envs/lidar_capture18.log` deprecated.
+
+**Current state**: keyframe capture running on H100 (pid 100887, log
+`envs/lidar_capture_keyframes.log`). Verified: `0081dd00` 53 keyframes (0..258) done, also
+`020454a6`(33) + `0243c326`(53), on `033200b8`(46). Local UE4 up (pid 1152882) via reverse
+tunnel; mission console window on :1 (+1970+87). ~30-40 min to finish 18 eps.
+
+**Next**: wait for capture → commit+push fork (replay script + instrumentation) → H100
+`git fetch fork && git reset --hard fork/main` → flip `require_lidar=True` in
+`src/train_step_a.py:213` → finetune from `checkpoints/aerial_vla` → analyze attention/ablation.
+
+## SESSION 2026-09-19 (cont.) — keyframe capture completed (18/18, verified)
+
+**Problem**: (a) UE4 scene died mid-capture (process gone, port 30001 down) → RPC `Request timed out`
+on `simSetKinematics`, capture loop aborted episodes at frame 0 and then blocked (log frozen ~10 min).
+Not an OOM (GPU 1.1 GiB/6 GiB, RAM free). (b) After restart, 5 episodes remained truncated at 40 frames
+because the crashed run only reached ~11 before dying, and the restart-3 covered only 3.
+
+**Solution**:
+- Killed the wedged H100 capture (pid 100887). Restarting the capture fresh triggered the server to
+  respawn UE4 (server + reverse tunnel stayed alive; only the UE4 binary had died).
+- Filtered episode lists (`data/uav_dataset/fog_lidar_missing3.json` / `_missing5.json`) + small launch
+  scripts (pid 116359 for 3, pid 119597 for 5) to re-capture ONLY the missing episodes (not waste the good ones).
+- Capture dir clears (`shutil.rmtree`) before re-capture prevents stale 0-39 frames mixing in.
+
+**Current state**: **18/18 episodes captured in keyframe mode**, integrity-verified on H100:
+`log_missing=0`, `image_missing=0` (frontcamera/downcamera/+depth), sampled logs have lidar pts.
+Total 1053 samples fully resolvable. Local UE4 dies sporadically mid-capture (~1 in 6 eps during the
+18-run; mitigated by filtered re-runs) — capture is now N=18 complete.
+
+**Next**: flip `require_lidar=True` in `src/train_step_a.py:213`; finetune on H100 from
+`checkpoints/aerial_vla` (`--data_root envs/lidar_capture --split_json data/aerovla_train_dataset_fog_lidar.json`);
+analyze `attn_stats` vs 1/64 baseline + `lidar_ablation()` deltas; update docs.
